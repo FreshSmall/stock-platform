@@ -5,7 +5,8 @@
 > 2. 收敛 V1 范围为精简 MVP，将原 V1 中过重或非核心的需求下沉到 V1.5/V2/V3；
 > 3. 新增「非功能性需求」「合规与风险声明」「AI 输出声明」章节；
 > 4. 简化技术架构（模块化单体，后续再拆微服务）；
-> 5. 新增「前端交互设计」章节（页面级布局 + 交互流程）。
+> 5. 新增「前端交互设计」章节（页面级布局 + 交互流程）；
+> 6. 数据层复用现有 `stock_analysis` 库（详见第二章 §2.2 数据层设计）。
 
 ------------------------------------------------------------------------
 
@@ -63,17 +64,21 @@ V1 采用 **模块化单体（Modular Monolith）**：单一 FastAPI 应用内�
                         │  │ strategy(策略/回测) │   │
                         │  │ user  (认证/偏好)   │   │
                         │  └────────────────────┘   │
-                        └───┬───────┬────────┬──────┘
-                            │       │        │
-                 ┌──────────▼┐  ┌───▼────┐ ┌─▼──────────┐
-                 │PostgreSQL │  │ Redis  │ │ LLM API    │
-                 │ (主库)    │  │(缓存)  │ │(DeepSeek等)│
-                 └───────────┘  └────────┘ └────────────┘
-                            │
-                 ┌──────────▼───────────┐
-                 │  数据源 (AkShare 等)  │
-                 └──────────────────────┘
+                        └───┬──────────────┬──────────┘
+                            │              │
+                 ┌──────────▼──────┐  ┌────▼───────────┐
+                 │ MySQL           │  │ LLM API         │
+                 │ stock_analysis  │  │ (DeepSeek 等)   │
+                 │ (行情+产物同库)  │  └─────────────────┘
+                 └──────┬──────────┘
+                        │
+                 ┌──────▼─────────────────┐
+                 │  数据源 (AkShare 等)    │
+                 └────────────────────────┘
 ```
+
+> 注：V1 不引入 Redis，使用进程内缓存（cachetools）过渡，
+> 用于行情查询缓存与 AI 分析结果冷却。V2 引入 Redis（缓存 + 限流 + Celery broker）。
 
 ### 2.1 技术栈
 
@@ -81,9 +86,9 @@ V1 采用 **模块化单体（Modular Monolith）**：单一 FastAPI 应用内�
 | ---------- | ----------------------------------------------- |
 | 后端       | **Python 3.11 + FastAPI + Uvicorn**             |
 | ORM        | SQLAlchemy 2.0 + Alembic                        |
-| 数据库     | PostgreSQL（V2 视情况引入 ClickHouse 存海量K线）|
-| 缓存       | Redis                                           |
-| 任务调度   | APScheduler（V2 升级至 Celery + Redis broker）  |
+| 数据库     | **MySQL（复用现有 `stock_analysis` 库）**       |
+| 缓存       | **V1：cachetools 进程内缓存**；V2：Redis        |
+| 任务调度   | APScheduler（V2 升级至 Celery）                 |
 | 量化计算   | pandas + numpy + TA-Lib + backtrader            |
 | AI         | LangChain / LangGraph（DeepSeek / 通义 / GPT）   |
 | 前端       | **React 18 + TypeScript + Vite**                |
@@ -93,7 +98,63 @@ V1 采用 **模块化单体（Modular Monolith）**：单一 FastAPI 应用内�
 | 部署       | Docker Compose（V1）；K8s 留待 V2                |
 
 > 说明：相比 V1.1，移除了 Spring Boot、MyBatis-Plus、XXL-Job、ES、Milvus、
-> Kafka、K8s 等过重组件，统一为 Python 生态，降低复杂度。
+> Kafka、K8s、Redis 等过重组件，统一为 Python 生态，降低复杂度。
+
+### 2.2 数据层设计（复用现有库）
+
+**策略：复用现有 `stock_analysis` 库，行情/财务类基础数据只读复用既有表，
+本系统自身产物（AI 分析、回测结果等）在**同库新建表，统一加 `sa_` 前缀**避免与既有系统冲突。**
+继续使用现有读写账号。
+
+#### 2.2.1 现有库探查结论（截至 2026-07-28）
+
+| 现有表 | 行数 | 最新日期 | 数据内容 |
+|---|---|---|---|
+| `daily_prices` | 1,117,784 | 2026-07-28 | 日K（OHLC/量/额/涨跌幅/换手率），4216只股票，2021-06 至今 |
+| `stock_pool` | 8,456 | 2026-06-19 | 股池快照（名称/交易所/行业/市值/PE/PB/上市日），4272只 |
+| `minute_prices` | 4,896 | 2026-07-08 | 5分钟K（仅6只，数据稀疏）|
+| `chip_distribution` | 392,488 | 2026-07-10 | 筹码分布（CYQ算法，提前满足V1.5）|
+| `stock_signal` | 8,833 | 2026-06-26 | 每日量价评分信号（多维评分+理由）|
+| `recommend_result` | 2,808 | 2026-07-10 | 4维推荐评分（价值/技术/筹码/综合）|
+| `chan_signal` | 316 | 2026-07-26 | 缠论选股信号 |
+| `screen_result` | 838 | 2026-07-10 | 漏斗筛选（粗筛+精筛）|
+| `stock_signal_log` | 144 | 2026-06-11 | 信号历史与回测追踪 |
+| `stocks` | 0 | — | 基础信息表（**空表**，未启用）|
+| `job_runs` | 105 | — | 同步任务执行日志 |
+
+#### 2.2.2 复用映射（PRD V1.2 需求 → 现有表）
+
+| PRD V1.2 需求 | 复用现有表 | 复用方式 | 备注 |
+|---|---|---|---|
+| 股票基础信息 | `stock_pool` | 只读 | 字段齐全（行业部分缺失，需补采）|
+| 日K行情 | `daily_prices` | 只读 | **完美匹配，字段全覆盖** |
+| 基础财务 PE/PB | `stock_pool` / `recommend_result` | 只读 | PE/PB 有 |
+| 技术指标 MA/MACD/KDJ | `daily_prices` | 实时计算 | 不落表，查询时现算 |
+| 筹码峰（V1.5） | `chip_distribution` | 只读 | 超前储备，V1.5 直接用 |
+
+#### 2.2.3 需新建的产物表（同库，加 `sa_` 前缀）
+
+| 新表 | 用途 | 核心字段 |
+|---|---|---|
+| `sa_ai_analysis` | AI 股票按需分析结果（LLM 输出） | stock_code, request_id, score, fundamentals, technicals, capital, news, risk, full_text, created_at |
+| `sa_backtest_run` | 回测任务记录 | run_id, strategy, params(JSON), stock_pool, date_range, status, created_at |
+| `sa_backtest_result` | 回测结果指标 | run_id, return_rate, max_drawdown, sharpe, win_rate, equity_curve(JSON) |
+| `sa_money_flow` | 主力资金净流入（基础资金数据） | stock_code, trade_date, main_net_inflow |
+| `sa_financial_extra` | 深度财务补充（ROE/EPS/营收增长等）| stock_code, report_date, roe, eps, revenue_growth, profit_growth |
+| `sa_user` | 用户与认证（JWT） | user_id, username, password_hash, created_at |
+| `sa_ai_chat_session` / `sa_ai_chat_message` | AI 助手对话历史 | session_id, messages |
+
+> 说明：`sa_ai_analysis` 区别于既有的 `stock_signal`/`recommend_result`——
+> 后者是既有系统的批量评分快照，前者是本系统**用户触发的单股按需 LLM 分析**，两者不混用。
+
+#### 2.2.4 数据采集任务（V1）
+
+- **日K增量同步**：每日收盘后增量拉取写入 `daily_prices`（沿用既有任务，本系统可触发或监听）；
+- **基础财务补采**：ROE/EPS/营收增长率 写入新建的 `sa_financial_extra`（现有库无）；
+- **主力资金**：写入 `sa_money_flow`（现有库无）；
+- **行业字段补全**：回填 `stock_pool` 的 `industry`（当前部分为 NULL）。
+
+> 数据校验沿用既有 `job_runs` 机制，或在新表中记录同步状态。
 
 ------------------------------------------------------------------------
 
