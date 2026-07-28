@@ -1,9 +1,10 @@
-"""Market data service: stock search, info lookup, K-line fetch (Task B1).
+"""Market data service: stock search/info/K-line (B1) + market overview (B3).
 
 These functions are the data-access layer between the FastAPI routers and the
 read-only ``stock_pool`` / ``daily_prices`` tables. They take a SQLAlchemy
-``Session`` and return ORM rows so the caller keeps control over the
-transaction lifecycle (e.g. ``get_db`` in tests).
+``Session`` and return ORM rows (or plain dicts for the overview aggregates) so
+the caller keeps control over the transaction lifecycle (e.g. ``get_db`` in
+tests).
 
 All queries rely on the existing MySQL indexes ``uk_code_date`` and
 ``idx_code``; single-stock date-range K-line queries are already sub-500ms on
@@ -18,10 +19,28 @@ response, not here.
 
 from datetime import date
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.stock import DailyPrice, StockPool
+
+# The three major A-share indices we surface on the overview screen.
+# Stored as (code, display name). NOTE: as of Task B3 these codes are NOT
+# present in ``daily_prices`` (which only holds individual stocks — e.g.
+# ``000001`` there is 平安银行, not the 上证指数). ``get_indices`` therefore
+# returns placeholder rows with ``close=None``/``pct_change=None``; real index
+# quotes arrive via AkShare ingestion in Task B4.
+#
+# We deliberately do NOT filter index codes out of the breadth/hot-stock
+# queries: ``000001`` collides with a real stock (平安银行), so a code-based
+# exclusion would drop a legitimate stock from the counts. If B4 later stores
+# indices in ``daily_prices`` it should use a distinct table or a prefixed code
+# (e.g. ``sh000001``) to avoid this collision.
+MAJOR_INDICES: list[tuple[str, str]] = [
+    ("000001", "上证指数"),
+    ("399001", "深证成指"),
+    ("399006", "创业板指"),
+]
 
 
 def search_stocks(db: Session, q: str, limit: int = 20) -> list[StockPool]:
@@ -100,3 +119,149 @@ def get_kline(
         stmt = stmt.where(DailyPrice.trade_date <= end)
     stmt = stmt.order_by(DailyPrice.trade_date.asc())
     return list(db.execute(stmt).scalars().all())
+
+
+def get_indices(db: Session) -> list[dict]:
+    """Return the latest quote for the 3 major A-share indices.
+
+    A DB probe (Task B3) confirmed that none of the index codes (000001, 399001,
+    399006) live in ``daily_prices`` — the ``000001`` that does appear there is
+    平安银行, not 上证指数. So we emit placeholder rows with ``close=None`` /
+    ``pct_change=None`` rather than returning misleading stock data.
+
+    TODO(B4): replace this fallback with real quotes pulled from AkShare's
+    index endpoint (e.g. ``ak.stock_zh_index_spot()``) once that ingestion
+    pipeline is wired up. The contract (list of 3 dicts with code/name/close/
+    pct_change) will stay the same so the router/tests need no changes.
+
+    Returns:
+        A list of 3 dicts, one per index, in the order 上证/深证/创业板.
+    """
+    return [
+        {"code": code, "name": name, "close": None, "pct_change": None}
+        for code, name in MAJOR_INDICES
+    ]
+
+
+def _latest_trade_date(db: Session) -> date | None:
+    """Return the max ``trade_date`` in ``daily_prices``, or ``None`` if empty."""
+    return db.execute(select(func.max(DailyPrice.trade_date))).scalar()
+
+
+def get_market_summary(db: Session) -> dict:
+    """Market breadth on the latest trading day in ``daily_prices``.
+
+    Counts stocks by the sign of ``pct_change`` (advance > 0, decline < 0,
+    flat == 0; rows with NULL pct_change are skipped) and sums ``amount`` across
+    the whole market. Every ``daily_prices`` row counts as a stock today — see
+    the note on :data:`MAJOR_INDICES` for why index codes are not filtered out.
+
+    Returns:
+        A dict shaped like :class:`app.schemas.market.MarketSummary`. If the
+        table is empty, every count is 0 and ``trade_date``/``total_amount``
+        are ``None``.
+    """
+    latest = _latest_trade_date(db)
+    if latest is None:
+        return {
+            "trade_date": None,
+            "advance_count": 0,
+            "decline_count": 0,
+            "flat_count": 0,
+            "total_amount": None,
+        }
+
+    stmt = (
+        select(
+            func.coalesce(func.sum(DailyPrice.amount), 0).label("total_amount"),
+        )
+        .where(DailyPrice.trade_date == latest)
+    )
+    total_amount = db.execute(stmt).scalar_one()
+
+    # Breadth counts: SUM(CASE WHEN sign ...) over the day's rows. We filter
+    # NULL pct_change out of all three arms so the totals agree with the row
+    # count a user would see in the table.
+    sign_counts = db.execute(
+        select(
+            func.sum(
+                case((DailyPrice.pct_change > 0, 1), else_=0)
+            ).label("advance"),
+            func.sum(
+                case((DailyPrice.pct_change < 0, 1), else_=0)
+            ).label("decline"),
+            func.sum(
+                case((DailyPrice.pct_change == 0, 1), else_=0)
+            ).label("flat"),
+        )
+        .where(DailyPrice.trade_date == latest)
+        .where(DailyPrice.pct_change.is_not(None))
+    ).one()
+    advance, decline, flat = sign_counts
+
+    return {
+        "trade_date": latest,
+        "advance_count": int(advance or 0),
+        "decline_count": int(decline or 0),
+        "flat_count": int(flat or 0),
+        "total_amount": total_amount,
+    }
+
+
+def get_hot_stocks(db: Session, sort: str = "amount", limit: int = 20) -> list[dict]:
+    """Top stocks on the latest trading day, with names joined from stock_pool.
+
+    ``sort="amount"`` ranks the most-active stocks by turnover desc;
+    ``sort="pct_change"`` ranks top gainers by pct_change desc. Rows whose
+    ``pct_change`` is NULL are dropped before ranking (a NULL pct_change can't
+    meaningfully be "top") — for ``amount`` sort NULL amounts are also dropped
+    so the leaderboard never shows a zero-turnover row at the top.
+
+    ``stock_name`` comes from an OUTER JOIN against the freshest ``stock_pool``
+    snapshot, because ``daily_prices`` is code+OHLCV only. A stock that isn't in
+    the pool yet gets ``stock_name=None`` (the LEFT JOIN keeps the row).
+
+    Args:
+        db: an open SQLAlchemy session (caller manages its lifecycle).
+        sort: one of ``"amount"`` / ``"pct_change"`` (validated at the API layer).
+        limit: max rows to return (1..100, validated at the API layer).
+
+    Returns:
+        Up to ``limit`` dicts shaped like :class:`app.schemas.market.HotStock`.
+    """
+    latest = _latest_trade_date(db)
+    if latest is None:
+        return []
+
+    sp_latest = db.execute(select(func.max(StockPool.trade_date))).scalar()
+
+    stmt = (
+        select(DailyPrice, StockPool.stock_name)
+        .outerjoin(
+            StockPool,
+            and_(
+                StockPool.stock_code == DailyPrice.stock_code,
+                StockPool.trade_date == sp_latest,
+            ),
+        )
+        .where(DailyPrice.trade_date == latest)
+        .where(DailyPrice.pct_change.is_not(None))
+    )
+    if sort == "pct_change":
+        stmt = stmt.order_by(DailyPrice.pct_change.desc())
+    else:  # amount — also drop NULL amounts so the top isn't a zero row.
+        stmt = stmt.where(DailyPrice.amount.is_not(None)).order_by(
+            DailyPrice.amount.desc()
+        )
+    stmt = stmt.limit(limit)
+
+    return [
+        {
+            "stock_code": dp.stock_code,
+            "stock_name": name,
+            "close": dp.close,
+            "pct_change": dp.pct_change,
+            "amount": dp.amount,
+        }
+        for dp, name in db.execute(stmt).all()
+    ]
