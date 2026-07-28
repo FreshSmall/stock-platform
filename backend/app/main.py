@@ -1,5 +1,7 @@
 """FastAPI application entrypoint."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
@@ -8,6 +10,7 @@ from app.api.market import router as market_router
 from app.api.stock import router as stock_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
+from app.scheduler import init_scheduler, shutdown_scheduler
 
 
 def api_ok(data=None, msg: str = "ok") -> dict:
@@ -15,7 +18,21 @@ def api_ok(data=None, msg: str = "ok") -> dict:
     return {"code": 0, "msg": msg, "data": data}
 
 
-app = FastAPI(title="AI Quant Platform", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the APScheduler on startup, shut it down on exit.
+
+    The scheduler is created lazily inside :func:`init_scheduler`, so importing
+    this module (e.g. in tests) has no background-thread side effects.
+    """
+    init_scheduler()
+    try:
+        yield
+    finally:
+        shutdown_scheduler()
+
+
+app = FastAPI(title="AI Quant Platform", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
