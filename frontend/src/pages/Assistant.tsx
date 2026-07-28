@@ -1,4 +1,577 @@
-// TODO(H7): full implementation
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import {
+  Alert,
+  Button,
+  Card,
+  Collapse,
+  Empty,
+  Input,
+  List,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+} from 'antd';
+import ReactMarkdown from 'react-markdown';
+import {
+  createSession,
+  getMessages,
+  listSessions,
+  sendMessageStream,
+} from '../api/assistant';
+import RiskNotice from '../components/RiskNotice';
+
+const { TextArea } = Input;
+const { Title, Text } = Typography;
+
+interface SessionBrief {
+  session_id: string;
+  title?: string | null;
+  created_at?: string | null;
+}
+
+// One tool invocation surfaced inline in an assistant reply.
+interface ToolStep {
+  name: string;
+  args: unknown;
+  result?: unknown;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  toolSteps: ToolStep[];
+  error?: string;
+}
+
+const EXAMPLE_CHIPS = ['分析 600519', 'MACD 金叉股票', '回测 MA 策略'];
+
+// H6 — AI 助手对话.
+//
+// Single-column chat layout: a sessions drawer toggled on the left, the
+// scrolling message stream in the middle, and a TextArea + 发送 at the bottom.
+//
+// Assistant replies accumulate over the SSE stream: 'tool_call' adds a step
+// ("正在调用工具"), 'tool_result' fills that step's result (collapsible JSON),
+// 'chunk' appends to the in-progress text, 'done' finalizes it. Each assistant
+// message is rendered as markdown and ends with the risk disclaimer.
 export default function Assistant() {
-  return <h1>AI 助手</h1>;
+  const [sessions, setSessions] = useState<SessionBrief[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [messages, dispatch] = useReducer(messagesReducer, []);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [, setError] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(true);
+
+  const idRef = useRef(0);
+  const nextId = useCallback(() => `m${++idRef.current}`, []);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const streamTokenRef = useRef(0); // bumped each send to ignore stale events
+
+  // --- session bootstrap: load the list, auto-select the newest on first mount.
+  const refreshSessions = useCallback(async (selectNewest = false) => {
+    setLoadingSessions(true);
+    try {
+      const list: SessionBrief[] = await listSessions();
+      setSessions(list);
+      if (selectNewest && list.length > 0) {
+        await selectSession(list[0].session_id);
+      }
+    } catch {
+      // ignore — user can still start a new session manually
+    } finally {
+      setLoadingSessions(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    refreshSessions(true);
+  }, [refreshSessions]);
+
+  // --- load a session's history into the message list.
+  const selectSession = useCallback(
+    async (sid: string) => {
+      setError(null);
+      setSessionId(sid);
+      dispatch({ type: 'reset' });
+      try {
+        const rows: any[] = await getMessages(sid);
+        // Assistant tool messages aren't separately surfaced; map persisted
+        // rows into bubbles, deferring tool_calls JSON to the assistant bubble.
+        const mapped: ChatMessage[] = rows
+          .filter((r) => r.role !== 'tool')
+          .map((r) => ({
+            id: nextId(),
+            role: r.role,
+            content: r.content ?? '',
+            toolSteps: [],
+          }));
+        dispatch({ type: 'set', messages: mapped });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : '加载历史失败');
+      }
+    },
+    [nextId],
+  );
+
+  const newSession = useCallback(async () => {
+    setError(null);
+    try {
+      const s: { session_id: string; title?: string | null } = await createSession(
+        '新对话',
+      );
+      setSessions((prev) => [
+        { session_id: s.session_id, title: s.title, created_at: null },
+        ...prev,
+      ]);
+      setSessionId(s.session_id);
+      dispatch({ type: 'reset' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '创建会话失败');
+    }
+  }, []);
+
+  const send = useCallback(
+    async (text: string) => {
+      const content = text.trim();
+      if (!content || sending) return;
+
+      // Lazy session creation: if the user starts typing before creating one,
+      // make a session on the fly, then proceed.
+      let sid = sessionId;
+      if (!sid) {
+        try {
+          const s: { session_id: string; title?: string | null } =
+            await createSession(content.slice(0, 20));
+          sid = s.session_id;
+          setSessionId(sid);
+          setSessions((prev) => [
+            { session_id: sid!, title: s.title, created_at: null },
+            ...prev,
+          ]);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : '创建会话失败');
+          return;
+        }
+      }
+
+      setError(null);
+      setInput('');
+      setSending(true);
+      const token = ++streamTokenRef.current;
+
+      const userId = nextId();
+      const assistantId = nextId();
+      dispatch({
+        type: 'add',
+        message: { id: userId, role: 'user', content, toolSteps: [] },
+      });
+      dispatch({
+        type: 'add',
+        message: { id: assistantId, role: 'assistant', content: '', toolSteps: [] },
+      });
+
+      try {
+        await sendMessageStream(
+          sid,
+          content,
+          (evt: { type: string; data?: unknown }) => {
+            if (token !== streamTokenRef.current) return; // stale stream
+            const { type, data } = evt;
+            if (type === 'chunk' && typeof data === 'string') {
+              dispatch({ type: 'appendChunk', id: assistantId, chunk: data });
+            } else if (type === 'tool_call') {
+              const d = data as { name?: string; args?: unknown };
+              dispatch({
+                type: 'addToolStep',
+                id: assistantId,
+                step: { name: d?.name ?? '工具', args: d?.args },
+              });
+            } else if (type === 'tool_result') {
+              const d = data as { name?: string; result?: unknown };
+              dispatch({
+                type: 'fillToolResult',
+                id: assistantId,
+                name: d?.name,
+                result: d?.result,
+              });
+            } else if (type === 'error') {
+              const msg = typeof data === 'string' ? data : '回答失败';
+              dispatch({ type: 'setError', id: assistantId, error: msg });
+            } else if (type === 'done') {
+              // The stream emits chunks already; 'done' carries the final full
+              // text. Backfill it only if no chunks were captured (some models
+              // return the whole answer in 'done' with no chunks).
+              if (typeof data === 'string' && data.length > 0) {
+                dispatch({ type: 'finalize', id: assistantId, content: data });
+              }
+            }
+            // 'user_saved' and 'disclaimer' need no UI action (disclaimer is
+            // rendered globally and per-message).
+          },
+          (e: unknown) => {
+            if (token !== streamTokenRef.current) return;
+            const msg = e instanceof Error ? e.message : '流式连接中断';
+            dispatch({ type: 'setError', id: assistantId, error: msg });
+          },
+        );
+      } catch (e: unknown) {
+        if (token !== streamTokenRef.current) return;
+        dispatch({
+          type: 'setError',
+          id: assistantId,
+          error: e instanceof Error ? e.message : '发送失败',
+        });
+      } finally {
+        if (token === streamTokenRef.current) setSending(false);
+      }
+    },
+    [sessionId, sending, nextId],
+  );
+
+  // Auto-scroll to the newest message as it streams in.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  return (
+    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 132px)' }}>
+      {/* Sessions list (fixed-width rail; V1 simplicity — no drawer needed). */}
+      <Card
+        size="small"
+        style={{ width: 220, flexShrink: 0 }}
+        styles={{ body: { padding: 0 } }}
+        title="会话"
+        extra={
+          <Button size="small" type="primary" onClick={newSession}>
+            新对话
+          </Button>
+        }
+      >
+        {loadingSessions ? (
+          <div style={{ padding: 16, textAlign: 'center' }}>
+            <Spin />
+          </div>
+        ) : sessions.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="暂无会话"
+            style={{ padding: 16 }}
+          />
+        ) : (
+          <List
+            size="small"
+            dataSource={sessions}
+            renderItem={(s) => (
+              <List.Item
+                onClick={() => selectSession(s.session_id)}
+                style={{
+                  cursor: 'pointer',
+                  padding: '8px 12px',
+                  background:
+                    s.session_id === sessionId ? '#e6f4ff' : undefined,
+                }}
+              >
+                <Text
+                  ellipsis
+                  style={{ width: '100%' }}
+                  strong={s.session_id === sessionId}
+                >
+                  {s.title || '新对话'}
+                </Text>
+              </List.Item>
+            )}
+          />
+        )}
+      </Card>
+
+      {/* Main chat column. */}
+      <Card
+        size="small"
+        style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}
+        styles={{ body: { flex: 1, padding: 0, overflow: 'hidden' } }}
+        title={<Title level={5} style={{ margin: 0 }}>AI 助手</Title>}
+      >
+        <div
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: 16,
+            background: '#fafafa',
+          }}
+        >
+          {messages.length === 0 ? (
+            <EmptyState onStart={() => newSession()} />
+          ) : (
+            <MessageList messages={messages} sending={sending} />
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Composer */}
+        <div style={{ borderTop: '1px solid #f0f0f0', padding: 12 }}>
+          <Space size={[8, 8]} wrap style={{ marginBottom: 8 }}>
+            {EXAMPLE_CHIPS.map((c) => (
+              <Tag
+                key={c}
+                style={{ cursor: 'pointer' }}
+                onClick={() => send(c)}
+              >
+                {c}
+              </Tag>
+            ))}
+          </Space>
+          <Space.Compact style={{ width: '100%' }}>
+            <TextArea
+              autoSize={{ minRows: 1, maxRows: 4 }}
+              placeholder="输入问题，如「分析 600519」"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onPressEnter={(e) => {
+                if (!e.shiftKey) {
+                  e.preventDefault();
+                  send(input);
+                }
+              }}
+            />
+            <Button
+              type="primary"
+              loading={sending}
+              onClick={() => send(input)}
+              style={{ height: 'auto' }}
+            >
+              发送
+            </Button>
+          </Space.Compact>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function MessageList({
+  messages,
+  sending,
+}: {
+  messages: ChatMessage[];
+  sending: boolean;
+}) {
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {messages.map((m) => (
+        <MessageBubble key={m.id} message={m} sending={sending} />
+      ))}
+    </Space>
+  );
+}
+
+function MessageBubble({ message, sending }: { message: ChatMessage; sending: boolean }) {
+  const isUser = message.role === 'user';
+  const bubbleStyle: React.CSSProperties = {
+    maxWidth: '80%',
+    padding: '10px 14px',
+    borderRadius: 10,
+    background: isUser ? '#1677ff' : '#fff',
+    color: isUser ? '#fff' : 'inherit',
+    border: isUser ? 'none' : '1px solid #f0f0f0',
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: isUser ? 'flex-end' : 'flex-start',
+      }}
+    >
+      <div style={bubbleStyle}>
+        {isUser ? (
+          <span style={{ whiteSpace: 'pre-wrap' }}>{message.content}</span>
+        ) : (
+          <>
+            {/* Tool calls render inline above the streamed text. */}
+            {message.toolSteps.map((step, i) => (
+              <ToolStepView key={i} step={step} />
+            ))}
+
+            {message.content ? (
+              <div className="assistant-md">
+                <ReactMarkdown>{message.content}</ReactMarkdown>
+              </div>
+            ) : (
+              !message.error &&
+              sending && (
+                <Text type="secondary">
+                  正在思考…
+                  <span className="blink">▍</span>
+                </Text>
+              )
+            )}
+
+            {message.error && (
+              <Alert
+                type="error"
+                showIcon
+                message={message.error}
+                style={{ margin: '4px 0' }}
+              />
+            )}
+
+            {!isUser && (message.content || message.error) && (
+              <Text
+                type="secondary"
+                style={{ display: 'block', marginTop: 8, fontSize: 12 }}
+              >
+                <RiskNotice />
+              </Text>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToolStepView({ step }: { step: ToolStep }) {
+  const header = (
+    <Space size={6}>
+      <Tag color="blue">工具</Tag>
+      <Text strong>{step.name}</Text>
+      {step.result === undefined && <Text type="secondary">调用中…</Text>}
+    </Space>
+  );
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ marginBottom: 4 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          正在调用工具：{step.name}
+        </Text>
+      </div>
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: '1',
+            label: header,
+            children: (
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    参数
+                  </Text>
+                  <pre style={preStyle}>{safeJson(step.args)}</pre>
+                </div>
+                {step.result !== undefined && (
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      工具结果
+                    </Text>
+                    <pre style={preStyle}>{safeJson(step.result)}</pre>
+                  </div>
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+function EmptyState({ onStart }: { onStart: () => void }) {
+  return (
+    <Empty description="开始一段新的对话" style={{ padding: 40 }}>
+      <Button type="primary" onClick={onStart}>
+        新对话
+      </Button>
+    </Empty>
+  );
+}
+
+const preStyle: React.CSSProperties = {
+  margin: 0,
+  padding: 8,
+  background: '#f5f5f5',
+  borderRadius: 4,
+  fontSize: 12,
+  maxHeight: 200,
+  overflow: 'auto',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+};
+
+function safeJson(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+// --- message state ----------------------------------------------------------
+
+type Action =
+  | { type: 'add'; message: ChatMessage }
+  | { type: 'appendChunk'; id: string; chunk: string }
+  | { type: 'finalize'; id: string; content: string }
+  | { type: 'addToolStep'; id: string; step: ToolStep }
+  | { type: 'fillToolResult'; id: string; name?: string; result: unknown }
+  | { type: 'setError'; id: string; error: string }
+  | { type: 'set'; messages: ChatMessage[] }
+  | { type: 'reset' };
+
+function messagesReducer(state: ChatMessage[], action: Action): ChatMessage[] {
+  switch (action.type) {
+    case 'add':
+      return [...state, action.message];
+    case 'appendChunk':
+      return patch(state, action.id, (m) => ({ ...m, content: m.content + action.chunk }));
+    case 'finalize':
+      // Only backfill if nothing streamed in; never overwrite chunks.
+      return patch(state, action.id, (m) =>
+        m.content.length > 0 ? m : { ...m, content: action.content },
+      );
+    case 'addToolStep':
+      return patch(state, action.id, (m) => ({
+        ...m,
+        toolSteps: [...m.toolSteps, action.step],
+      }));
+    case 'fillToolResult': {
+      return patch(state, action.id, (m) => {
+        // Fill the LAST matching step that has no result yet (a tool may be
+        // called more than once in one turn).
+        const steps = [...m.toolSteps];
+        for (let i = steps.length - 1; i >= 0; i--) {
+          if (
+            steps[i].result === undefined &&
+            (!action.name || steps[i].name === action.name)
+          ) {
+            steps[i] = { ...steps[i], result: action.result };
+            break;
+          }
+        }
+        return { ...m, toolSteps: steps };
+      });
+    }
+    case 'setError':
+      return patch(state, action.id, (m) => ({ ...m, error: action.error }));
+    case 'set':
+      return action.messages;
+    case 'reset':
+      return [];
+    default:
+      return state;
+  }
+}
+
+function patch(
+  state: ChatMessage[],
+  id: string,
+  fn: (m: ChatMessage) => ChatMessage,
+): ChatMessage[] {
+  return state.map((m) => (m.id === id ? fn(m) : m));
 }
