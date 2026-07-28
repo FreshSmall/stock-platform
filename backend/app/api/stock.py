@@ -20,12 +20,13 @@ without polluting the public surface.
 
 from datetime import date
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.schemas.stock import KLineItem, StockBrief, StockInfo
-from app.services import market_service
+from app.services import indicator_service, market_service
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -104,3 +105,42 @@ def get_kline(
         for r in rows
     ]
     return _ok(items)
+
+
+@router.get("/{code}/indicators")
+def get_indicators(
+    code: str,
+    type: str = Query(..., pattern="^(ma|macd|kdj)$"),
+    start: date | None = None,
+    end: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compute a technical indicator series over the K-line window.
+
+    ``type`` selects the indicator: ``ma`` (5/10/20), ``macd`` (12/26/9) or
+    ``kdj`` (9). The K-line rows come from :func:`market_service.get_kline`;
+    only bars whose close (and, for KDJ, high/low) are non-null participate,
+    and indicator values are emitted NaN-as-null so the front end can skip
+    warmup bars without special handling.
+    """
+    rows = market_service.get_kline(db, code, start, end)
+    if not rows:
+        return _ok(None, msg="no data")
+
+    closes = pd.Series([float(r.close) for r in rows if r.close is not None])
+    dates = [r.trade_date.isoformat() for r in rows if r.close is not None]
+
+    if type == "ma":
+        df = indicator_service.calc_ma(closes)
+    elif type == "macd":
+        df = indicator_service.calc_macd(closes)
+    else:  # kdj — high/low required, keep index aligned with closes.
+        highs = pd.Series([float(r.high) for r in rows if r.close is not None])
+        lows = pd.Series([float(r.low) for r in rows if r.close is not None])
+        df = indicator_service.calc_kdj(highs, lows, closes)
+
+    data = [
+        {"trade_date": d, **{k: (None if pd.isna(v) else float(v)) for k, v in row.items()}}
+        for d, row in zip(dates, df.to_dict(orient="records"))
+    ]
+    return _ok(data)
