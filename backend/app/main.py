@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 
 from app.core.config import settings
+from app.core.errors import register_exception_handlers
 
 
 def api_ok(data=None, msg: str = "ok") -> dict:
@@ -23,6 +24,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Render BizError into the unified envelope while keeping HTTP 200.
+register_exception_handlers(app)
 
 router = APIRouter(prefix="/api/v1")
 
