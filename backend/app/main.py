@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 
+from app.api.stock import router as stock_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 
@@ -36,4 +37,5 @@ def health() -> dict:
     return api_ok({"status": "up"})
 
 
+router.include_router(stock_router)
 app.include_router(router)
