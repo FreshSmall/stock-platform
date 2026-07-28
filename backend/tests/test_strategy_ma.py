@@ -161,7 +161,7 @@ def test_ma_strategy_sells_on_death_cross():
 def test_registry_has_ma_and_v2_placeholders():
     names = {m.name for m in registry.all_strategies()}
     assert "ma" in names
-    assert "macd" not in names  # macd added in C2
+    assert "macd" in names  # added in C2
     # V2 unavailable placeholders
     v2 = {m.name for m in registry.all_strategies() if not m.available}
     assert {"ema", "trend", "leader", "board", "lowbuy", "breakout"} <= v2

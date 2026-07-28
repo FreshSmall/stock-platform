@@ -82,6 +82,47 @@ register(
     )
 )
 
+from app.strategy.macd_strategy import MacdStrategy  # noqa: E402
+
+register(
+    StrategyMeta(
+        name="macd",
+        title="MACD 策略",
+        description=(
+            "基于 MACD 金叉/死叉的趋势策略，附简单顶背离减仓保护。"
+            "金叉买入，死叉/顶背离卖出。"
+        ),
+        params=[
+            {
+                "name": "period_me1",
+                "type": "int",
+                "default": 12,
+                "min": 2,
+                "max": 60,
+                "description": "快线EMA周期",
+            },
+            {
+                "name": "period_me2",
+                "type": "int",
+                "default": 26,
+                "min": 5,
+                "max": 120,
+                "description": "慢线EMA周期",
+            },
+            {
+                "name": "period_signal",
+                "type": "int",
+                "default": 9,
+                "min": 2,
+                "max": 60,
+                "description": "信号线周期",
+            },
+        ],
+        available=True,
+        cls=MacdStrategy,
+    )
+)
+
 # V2 strategies pre-registered as unavailable (greyed out in UI)
 for _name, _title, _desc in [
     ("ema", "EMA 策略", "指数移动均线金叉/死叉"),
