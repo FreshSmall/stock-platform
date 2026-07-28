@@ -8,6 +8,7 @@ from fastapi.routing import APIRouter
 
 from app.api.analysis import router as analysis_router
 from app.api.assistant import router as assistant_router
+from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
 from app.api.market import router as market_router
 from app.api.stock import router as stock_router
@@ -61,6 +62,7 @@ def health() -> dict:
 
 router.include_router(stock_router)
 router.include_router(market_router)
+router.include_router(auth_router)
 router.include_router(backtest_router)
 router.include_router(strategy_router)
 router.include_router(analysis_router)

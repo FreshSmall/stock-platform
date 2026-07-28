@@ -16,8 +16,6 @@ from app.models.ai import SaAiChatMessage, SaAiChatSession
 
 client = TestClient(app)
 
-_HEADERS = {"Authorization": "Bearer test"}
-
 
 class _FakeAIMsg:
     def __init__(self, content, tool_calls=None):
@@ -62,8 +60,8 @@ def _read_stream(response) -> list[dict]:
     return events
 
 
-def test_api_create_and_list_session():
-    r = client.post("/api/v1/assistant/sessions", json={"title": "t"}, headers=_HEADERS)
+def test_api_create_and_list_session(auth_headers):
+    r = client.post("/api/v1/assistant/sessions", json={"title": "t"}, headers=auth_headers)
     assert r.status_code == 200
     body = r.json()
     assert body["code"] == 0
@@ -71,16 +69,16 @@ def test_api_create_and_list_session():
     assert sid.startswith("cs-")
     assert body["data"]["title"] == "t"
     try:
-        r2 = client.get("/api/v1/assistant/sessions", headers=_HEADERS)
+        r2 = client.get("/api/v1/assistant/sessions", headers=auth_headers)
         assert r2.status_code == 200
         assert any(s["session_id"] == sid for s in r2.json()["data"])
     finally:
         _cleanup(sid)
 
 
-def test_api_get_messages_history():
+def test_api_get_messages_history(auth_headers):
     sid = client.post(
-        "/api/v1/assistant/sessions", json={"title": "h"}, headers=_HEADERS
+        "/api/v1/assistant/sessions", json={"title": "h"}, headers=auth_headers
     ).json()["data"]["session_id"]
     try:
         r = client.get(f"/api/v1/assistant/sessions/{sid}/messages")
@@ -90,9 +88,9 @@ def test_api_get_messages_history():
         _cleanup(sid)
 
 
-def test_api_send_message_streams(monkeypatch):
+def test_api_send_message_streams(monkeypatch, auth_headers):
     sid = client.post(
-        "/api/v1/assistant/sessions", json={"title": "t"}, headers=_HEADERS
+        "/api/v1/assistant/sessions", json={"title": "t"}, headers=auth_headers
     ).json()["data"]["session_id"]
     try:
         # No-tools LLM -> exercises the content fallback chunk path.
@@ -103,7 +101,7 @@ def test_api_send_message_streams(monkeypatch):
             "POST",
             f"/api/v1/assistant/sessions/{sid}/messages",
             json={"content": "你好"},
-            headers=_HEADERS,
+            headers=auth_headers,
         ) as r:
             assert r.status_code == 200
             events = _read_stream(r)
@@ -118,9 +116,9 @@ def test_api_send_message_streams(monkeypatch):
         _cleanup(sid)
 
 
-def test_api_send_message_tool_flow_visible(monkeypatch):
+def test_api_send_message_tool_flow_visible(monkeypatch, auth_headers):
     sid = client.post(
-        "/api/v1/assistant/sessions", json={"title": "tc"}, headers=_HEADERS
+        "/api/v1/assistant/sessions", json={"title": "tc"}, headers=auth_headers
     ).json()["data"]["session_id"]
     try:
         fake = _FakeLLM(
@@ -144,7 +142,7 @@ def test_api_send_message_tool_flow_visible(monkeypatch):
             "POST",
             f"/api/v1/assistant/sessions/{sid}/messages",
             json={"content": "查 600519"},
-            headers=_HEADERS,
+            headers=auth_headers,
         ) as r:
             assert r.status_code == 200
             events = _read_stream(r)
@@ -159,11 +157,11 @@ def test_api_send_message_tool_flow_visible(monkeypatch):
         _cleanup(sid)
 
 
-def test_api_send_message_404_unknown_session():
+def test_api_send_message_404_unknown_session(auth_headers):
     r = client.post(
         "/api/v1/assistant/sessions/cs-does-not-exist/messages",
         json={"content": "hi"},
-        headers=_HEADERS,
+        headers=auth_headers,
     )
     assert r.status_code == 404
 

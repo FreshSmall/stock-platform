@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import stock_agent
 from app.core.deps import get_current_user_id, get_db
+from app.core.ratelimit import check_analysis_quota
 from app.schemas.ai import AnalysisResult
 from app.services import analysis_service
 
@@ -58,8 +59,13 @@ def trigger(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ) -> dict:
-    """Enforce the per-stock cooldown and return a fresh ``request_id``."""
-    analysis_service._rate_limit(code)
+    """Enforce the per-user and per-stock limits, return a fresh ``request_id``.
+
+    The per-USER token bucket (F2) is checked first, before the per-STOCK
+    cooldown, so a user can be throttled even on their first call to a code.
+    """
+    check_analysis_quota(user_id)  # per-USER rate limit (F2)
+    analysis_service._rate_limit(code)  # per-STOCK cooldown (D2)
     request_id = analysis_service.create_request_id()
     return _ok({"request_id": request_id, "stock_code": code})
 

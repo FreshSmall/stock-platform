@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.prompts import RISK_DISCLAIMER
 from app.core.deps import get_current_user_id, get_db
+from app.core.ratelimit import check_assistant_quota
 from app.services import assistant_service
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
@@ -115,6 +116,10 @@ def send_message(
         raise HTTPException(status_code=404, detail="session not found")
     if session.user_id != user_id:
         raise HTTPException(status_code=403, detail="forbidden")
+
+    # Per-USER token bucket (F2); checked after ownership so a 404/403 does not
+    # burn the caller's assistant quota.
+    check_assistant_quota(user_id)
 
     def event_gen():
         for evt_type, data in assistant_service.chat_stream(

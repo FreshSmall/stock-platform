@@ -22,11 +22,11 @@ FAKE_JSON = (
 )
 
 
-def test_api_trigger_returns_request_id():
+def test_api_trigger_returns_request_id(auth_headers):
     """POST /{code} returns 200 + a request_id starting with ``an-``."""
     analysis_service._cooldown.pop("600519", None)
     resp = client.post(
-        "/api/v1/analysis/600519", headers={"Authorization": "Bearer test"}
+        "/api/v1/analysis/600519", headers=auth_headers
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -45,7 +45,7 @@ def test_api_latest_returns_null_when_absent():
     assert body["data"] is None
 
 
-def test_api_stream_yields_sse_events(monkeypatch):
+def test_api_stream_yields_sse_events(monkeypatch, auth_headers):
     """GET /{code}/stream emits SSE chunks + a done + a disclaimer event."""
     monkeypatch.setattr(
         llm_client, "stream_chat", lambda messages: iter([FAKE_JSON])
@@ -55,7 +55,7 @@ def test_api_stream_yields_sse_events(monkeypatch):
     with client.stream(
         "GET",
         "/api/v1/analysis/600519/stream?request_id=an-test-stream",
-        headers={"Authorization": "Bearer test"},
+        headers=auth_headers,
     ) as resp:
         assert resp.status_code == 200
         text = ""
@@ -77,18 +77,18 @@ def test_api_stream_yields_sse_events(monkeypatch):
     analysis_service._cooldown.pop("600519", None)
 
 
-def test_api_trigger_429_within_cooldown():
+def test_api_trigger_429_within_cooldown(auth_headers):
     """A second POST for the same code within the cooldown returns 429."""
     code = "600519_APIRL"
     analysis_service._cooldown.pop(code, None)
 
     r1 = client.post(
-        f"/api/v1/analysis/{code}", headers={"Authorization": "Bearer test"}
+        f"/api/v1/analysis/{code}", headers=auth_headers
     )
     assert r1.status_code == 200
 
     r2 = client.post(
-        f"/api/v1/analysis/{code}", headers={"Authorization": "Bearer test"}
+        f"/api/v1/analysis/{code}", headers=auth_headers
     )
     assert r2.status_code == 429
 
