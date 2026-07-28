@@ -19,6 +19,7 @@ dependencies = [
     "backtrader",
     "langchain",
     "langchain-community",
+    "langchain-openai",
     "httpx",
     "python-jose[cryptography]",
     "passlib[bcrypt]",
