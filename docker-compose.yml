@@ -1,0 +1,46 @@
+# Docker Compose for the AI Quant Platform (Task I1).
+#
+# Runs the backend (FastAPI/uvicorn) and frontend (nginx-served SPA).
+# The database is an EXTERNAL managed MySQL on Aliyun RDS -- it is NOT
+# containerized here. The backend reads DB creds from environment variables,
+# which are supplied via the gitignored `.env` file at the repo root
+# (see backend/.env.example for the required keys).
+#
+# Usage:
+#   cp backend/.env.example .env   # then fill in real values
+#   make up                        # or: docker compose up --build -d
+#
+# Requires Docker Engine 20.10+ with the compose v2 plugin.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: stock-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    # Fail fast if secrets are missing instead of silently booting broken.
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: stock-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

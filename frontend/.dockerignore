@@ -1,0 +1,17 @@
+# Exclude files not needed in the frontend image. Build context = ./frontend.
+node_modules/
+dist/
+.vite/
+.cache/
+
+# Local secrets (frontend usually has none, but just in case).
+.env
+.env.*
+
+# Editor / OS cruft.
+.DS_Store
+.idea/
+.vscode/
+.git/
+.gitignore
+*.log

@@ -1,0 +1,32 @@
+# Exclude files not needed in the backend image to speed up builds and slim
+# the final image. Build context = ./backend.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Test / cache artifacts (tests are excluded to slim the runtime image).
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+
+# Local secrets -- NEVER bake into the image.
+.env
+.env.*
+!.env.example
+
+# Build / packaging artifacts.
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Editor / OS cruft.
+.DS_Store
+.idea/
+.vscode/
+.git/
+.gitignore
