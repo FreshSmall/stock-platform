@@ -9,6 +9,7 @@ from fastapi.routing import APIRouter
 from app.api.backtest import router as backtest_router
 from app.api.market import router as market_router
 from app.api.stock import router as stock_router
+from app.api.strategy import router as strategy_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.scheduler import init_scheduler, shutdown_scheduler
@@ -59,4 +60,5 @@ def health() -> dict:
 router.include_router(stock_router)
 router.include_router(market_router)
 router.include_router(backtest_router)
+router.include_router(strategy_router)
 app.include_router(router)
