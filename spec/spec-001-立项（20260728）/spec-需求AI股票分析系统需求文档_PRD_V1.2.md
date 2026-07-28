@@ -444,7 +444,7 @@ V1 实现方式：LLM + Function Calling（调用结构化数据查询/分析接
 
 V1（MVP）之外的所有需求已**拆分至独立需求池文档**统一管理：
 
-> 📄 [需求池_AI股票分析系统_Backlog.md](./需求池_AI股票分析系统_Backlog.md)
+> 📄 [需求池_AI股票分析系统_Backlog.md](../需求池_AI股票分析系统_Backlog.md)
 
 后续版本概览（详见需求池）：
 
