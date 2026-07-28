@@ -1,0 +1,43 @@
+[project]
+name = "stock-platform-backend"
+version = "0.1.0"
+description = "AI Quant Platform backend - FastAPI service for stock analysis."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[2.0]",
+    "alembic",
+    "pydantic-settings",
+    "pymysql",
+    "cryptography",
+    "cachetools",
+    "apscheduler",
+    "pandas",
+    "numpy",
+    "backtrader",
+    "langchain",
+    "langchain-community",
+    "httpx",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "akshare",
+    "pytest",
+    "pytest-asyncio",
+    "tenacity",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
