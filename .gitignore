@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Docker (Task I1): .env holds secrets consumed by docker compose via env_file;
+# local docker volumes / override files are not committed.
+.env.local
+docker-compose.override.yml
+
