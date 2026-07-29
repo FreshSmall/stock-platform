@@ -110,18 +110,19 @@ def get_kline(
 @router.get("/{code}/indicators")
 def get_indicators(
     code: str,
-    type: str = Query(..., pattern="^(ma|macd|kdj)$"),
+    type: str = Query(..., pattern="^(ma|ema|macd|kdj|rsi|boll)$"),
     start: date | None = None,
     end: date | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     """Compute a technical indicator series over the K-line window.
 
-    ``type`` selects the indicator: ``ma`` (5/10/20), ``macd`` (12/26/9) or
-    ``kdj`` (9). The K-line rows come from :func:`market_service.get_kline`;
-    only bars whose close (and, for KDJ, high/low) are non-null participate,
-    and indicator values are emitted NaN-as-null so the front end can skip
-    warmup bars without special handling.
+    ``type`` selects the indicator: ``ma`` (5/10/20), ``ema`` (12/26),
+    ``macd`` (12/26/9), ``kdj`` (9), ``rsi`` (6/12/24) or ``boll`` (20,2).
+    The K-line rows come from :func:`market_service.get_kline`; only bars whose
+    close (and, for KDJ, high/low) are non-null participate, and indicator
+    values are emitted NaN-as-null so the front end can skip warmup bars without
+    special handling.
     """
     rows = market_service.get_kline(db, code, start, end)
     if not rows:
@@ -132,8 +133,16 @@ def get_indicators(
 
     if type == "ma":
         df = indicator_service.calc_ma(closes)
+    elif type == "ema":
+        df = pd.DataFrame(
+            {f"ema{p}": indicator_service.calc_ema(closes, p) for p in (12, 26)}
+        )
     elif type == "macd":
         df = indicator_service.calc_macd(closes)
+    elif type == "rsi":
+        df = indicator_service.calc_rsi(closes)
+    elif type == "boll":
+        df = indicator_service.calc_boll(closes)
     else:  # kdj — high/low required, keep index aligned with closes.
         highs = pd.Series([float(r.high) for r in rows if r.close is not None])
         lows = pd.Series([float(r.low) for r in rows if r.close is not None])
