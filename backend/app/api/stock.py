@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.schemas.stock import KLineItem, StockBrief, StockInfo
-from app.services import chip_service, indicator_service, market_service
+from app.services import chip_service, indicator_service, market_data_service, market_service
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -181,3 +181,13 @@ def get_chip_distribution(
     if data is None:
         return _ok(None, msg="no chip data")
     return _ok(data)
+
+
+@router.get("/{code}/money-flow-detail")
+def get_money_flow_detail(
+    code: str,
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Four-tier (super/big/medium/small order) net inflow for a stock."""
+    return _ok(market_data_service.get_money_flow_detail(db, code, days))

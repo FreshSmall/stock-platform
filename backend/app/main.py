@@ -10,6 +10,7 @@ from app.api.analysis import router as analysis_router
 from app.api.assistant import router as assistant_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
+from app.api.dragon_tiger import router as dragon_tiger_router
 from app.api.market import router as market_router
 from app.api.stock import router as stock_router
 from app.api.strategy import router as strategy_router
@@ -67,4 +68,5 @@ router.include_router(backtest_router)
 router.include_router(strategy_router)
 router.include_router(analysis_router)
 router.include_router(assistant_router)
+router.include_router(dragon_tiger_router)
 app.include_router(router)
