@@ -77,6 +77,12 @@ def init_scheduler() -> BackgroundScheduler:
     """Create (if needed) and start the background scheduler.
 
     Idempotent: calling twice returns the same scheduler instance.
+
+    Registered jobs (all weekdays, Asia/Shanghai):
+    - ``daily_k_sync``: 16:30 (V1)
+    - V1.5 data jobs run after the daily-K sync so their inputs exist.
+      Each V1.5 job delegates to :func:`admin_service.run_task` so the run is
+      recorded in ``sa_admin_task_log`` (same path as a manual admin trigger).
     """
     global _scheduler
     if _scheduler is not None:
@@ -89,10 +95,38 @@ def init_scheduler() -> BackgroundScheduler:
         replace_existing=True,
         coalesce=True,
     )
+    # V1.5 jobs — registered via admin_service so they share the logging path.
+    # (task_name, hour, minute)
+    _v15_jobs = [
+        ("sentiment_sync", 16, 45),          # after daily_k_sync
+        ("north_flow_sync", 17, 0),
+        ("money_flow_detail_sync", 17, 5),
+        ("sector_sync", 17, 10),
+        ("dragon_tiger_sync", 18, 0),        # dragon-tiger publishes ~17:30
+    ]
+    for name, h, m in _v15_jobs:
+        sched.add_job(
+            _run_admin_task,
+            CronTrigger(hour=h, minute=m, day_of_week="mon-fri"),
+            args=[name],
+            id=name,
+            replace_existing=True,
+            coalesce=True,
+        )
     _scheduler = sched
     sched.start()
     logger.info("scheduler started")
     return sched
+
+
+def _run_admin_task(task_name: str) -> None:
+    """Run a V1.5 task through admin_service so it gets logged."""
+    from app.services import admin_service
+
+    try:
+        admin_service.run_task(task_name, triggered_by="scheduler")
+    except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
+        logger.exception("scheduled task %s failed", task_name)
 
 
 def shutdown_scheduler() -> None:
