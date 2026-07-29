@@ -82,7 +82,7 @@ export default function Strategy() {
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
           gap: 24,
-          alignItems: 'stretch',
+          alignItems: 'start',
         }}
       >
         {q.data.map((s) => (
@@ -107,8 +107,8 @@ function StrategyCard({
   const params = meta.params ?? [];
   return (
     <Card
-      styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column', padding: 20 } }}
-      style={{ width: '100%', height: '100%', opacity: meta.available ? 1 : 0.6 }}
+      styles={{ body: { display: 'flex', flexDirection: 'column', padding: 20 } }}
+      style={{ width: '100%', opacity: meta.available ? 1 : 0.6 }}
       title={
         <Space size={8} align="center">
           <span>{meta.title}</span>
@@ -121,7 +121,7 @@ function StrategyCard({
         {meta.description || '暂无描述'}
       </Paragraph>
 
-      <div style={{ flex: 1, minHeight: 40, marginBottom: 16 }}>
+      <div style={{ minHeight: 32, marginBottom: 16 }}>
         {params.length > 0 ? (
           <Space size={[8, 8]} wrap>
             {params.map((p) => (
