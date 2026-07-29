@@ -77,16 +77,22 @@ export default function Strategy() {
         </Title>
         <Text type="secondary">选择策略进入回测，验证历史表现</Text>
       </div>
-      <Row gutter={[16, 24]}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+          gap: 24,
+          alignItems: 'stretch',
+        }}
+      >
         {q.data.map((s) => (
-          <Col key={s.name} xs={24} sm={12} lg={8} style={{ display: 'flex' }}>
-            <StrategyCard
-              meta={s}
-              onBacktest={() => nav(`/backtest?strategy=${s.name}`)}
-            />
-          </Col>
+          <StrategyCard
+            key={s.name}
+            meta={s}
+            onBacktest={() => nav(`/backtest?strategy=${s.name}`)}
+          />
         ))}
-      </Row>
+      </div>
     </>
   );
 }
@@ -102,7 +108,7 @@ function StrategyCard({
   return (
     <Card
       styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column', padding: 20 } }}
-      style={{ height: '100%', opacity: meta.available ? 1 : 0.6 }}
+      style={{ width: '100%', height: '100%', opacity: meta.available ? 1 : 0.6 }}
       title={
         <Space size={8} align="center">
           <span>{meta.title}</span>
