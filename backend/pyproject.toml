@@ -20,7 +20,7 @@ dependencies = [
     "langchain",
     "langchain-community",
     "langchain-openai",
-    "httpx",
+    "httpx[socks]",
     "python-jose[cryptography]",
     # passlib 1.7.4 probes bcrypt.__about__.__version__, which was removed in
     # bcrypt >=4.1 and breaks password hashing. Pin a compatible release.
@@ -36,7 +36,7 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
-    "httpx",
+    "httpx[socks]",
 ]
 
 [build-system]

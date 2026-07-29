@@ -1,6 +1,17 @@
 """Application configuration loaded from environment variables / .env file."""
 
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# DeepSeek / 通义 / 大多数国内 LLM 服务走直连更快更稳。开发机常会开启
+# 系统级代理（如 Clash 的 all_proxy=socks5://127.0.0.1:7897），这会让
+# httpx/openai SDK 尝试走 SOCKS 代理，触发
+# "Using SOCKS proxy, but the 'socksio' package is not installed" 报错。
+# 这里显式清理代理环境变量，让 LLM 调用直连。
+for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                   "http_proxy", "https_proxy", "all_proxy"):
+    os.environ.pop(_proxy_var, None)
 
 
 class Settings(BaseSettings):

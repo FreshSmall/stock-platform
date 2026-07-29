@@ -71,13 +71,13 @@ export default function Strategy() {
 
   return (
     <>
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 24 }}>
         <Title level={4} style={{ margin: 0 }}>
           策略库
         </Title>
         <Text type="secondary">选择策略进入回测，验证历史表现</Text>
       </div>
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 24]}>
         {q.data.map((s) => (
           <Col key={s.name} xs={24} sm={12} lg={8}>
             <StrategyCard
@@ -101,7 +101,7 @@ function StrategyCard({
   const params = meta.params ?? [];
   return (
     <Card
-      styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column' } }}
+      styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column', padding: 20 } }}
       style={{ height: '100%', opacity: meta.available ? 1 : 0.6 }}
       title={
         <Space size={8} align="center">
@@ -111,11 +111,11 @@ function StrategyCard({
       }
       extra={<Tag>{meta.name}</Tag>}
     >
-      <Paragraph type="secondary" style={{ minHeight: 44, marginBottom: 12 }}>
+      <Paragraph type="secondary" style={{ marginBottom: 16 }}>
         {meta.description || '暂无描述'}
       </Paragraph>
 
-      <div style={{ flex: 1, marginBottom: 12 }}>
+      <div style={{ flex: 1, minHeight: 40, marginBottom: 16 }}>
         {params.length > 0 ? (
           <Space size={[8, 8]} wrap>
             {params.map((p) => (
