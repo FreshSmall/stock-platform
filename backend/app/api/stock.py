@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.schemas.stock import KLineItem, StockBrief, StockInfo
-from app.services import indicator_service, market_service
+from app.services import chip_service, indicator_service, market_service
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -163,4 +163,21 @@ def get_indicators(
         {"trade_date": d, **{k: (None if pd.isna(v) else float(v)) for k, v in row.items()}}
         for d, row in zip(dates, df.to_dict(orient="records"))
     ]
+    return _ok(data)
+
+
+@router.get("/{code}/chip-distribution")
+def get_chip_distribution(
+    code: str,
+    trade_date: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Chip-distribution (筹码峰) snapshot for a stock.
+
+    Reads the pre-computed ``chip_distribution`` table (BP-V1.5-007). Returns
+    ``data=None`` when no snapshot exists.
+    """
+    data = chip_service.get_chip(db, code, trade_date)
+    if data is None:
+        return _ok(None, msg="no chip data")
     return _ok(data)
