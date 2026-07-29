@@ -5,7 +5,10 @@ These tests run against the REAL ``stock_analysis`` database using the
 the canonical test stock — it is guaranteed to exist by the seed data.
 """
 
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
+
+from sqlalchemy import delete
 
 from app.models.stock import DailyPrice, StockPool
 from app.services import market_service
@@ -75,3 +78,70 @@ def test_get_kline_date_filter(db_session) -> None:
     assert rows, "expected at least one January 2026 bar for 600519"
     for r in rows:
         assert start <= r.trade_date <= end
+
+
+# --------------------------------------------------------------------------
+# V1.5: weekly/monthly K-line aggregation
+# --------------------------------------------------------------------------
+
+
+def _insert_daily(db, code, d, close):
+    db.add(DailyPrice(
+        stock_code=code, trade_date=d, open=Decimal(str(close)), close=Decimal(str(close)),
+        high=Decimal(str(close + 1)), low=Decimal(str(close - 1)),
+        volume=1000, amount=Decimal(str(close * 1000)), pct_change=Decimal("1.0"),
+        turnover=Decimal("0.5"),
+    ))
+
+
+def test_get_kline_weekly_aggregates(db_session):
+    """Weekly bars merge Mon-Fri daily bars; OHLC first/max/min/last, vol sum."""
+    db = db_session
+    code = "ZZKLN"
+    base = date(2026, 7, 20)  # Monday
+    for i in range(5):
+        _insert_daily(db, code, base + timedelta(days=i), 100.0 + i)  # closes 100..104
+    db.commit()
+    try:
+        bars = market_service.get_kline(db, code, period="w")
+        assert len(bars) == 1
+        b = bars[0]
+        assert b["open"] == 100.0
+        assert b["close"] == 104.0
+        assert b["high"] == 105.0
+        assert b["low"] == 99.0
+        assert b["volume"] == 5000
+    finally:
+        db.execute(delete(DailyPrice).where(DailyPrice.stock_code == code))
+        db.commit()
+
+
+def test_get_kline_monthly_aggregates(db_session):
+    db = db_session
+    code = "ZZKLM"
+    _insert_daily(db, code, date(2026, 6, 29), 50.0)
+    _insert_daily(db, code, date(2026, 7, 2), 60.0)
+    db.commit()
+    try:
+        bars = market_service.get_kline(db, code, period="m")
+        assert len(bars) == 2
+        closes = sorted(b["close"] for b in bars)
+        assert closes == [50.0, 60.0]
+    finally:
+        db.execute(delete(DailyPrice).where(DailyPrice.stock_code == code))
+        db.commit()
+
+
+def test_get_kline_daily_returns_orm(db_session):
+    """period=d (default) still returns ORM rows, unchanged behavior."""
+    db = db_session
+    code = "ZZKLD"
+    _insert_daily(db, code, date(2026, 7, 20), 100.0)
+    db.commit()
+    try:
+        bars = market_service.get_kline(db, code)  # default period
+        assert len(bars) == 1
+        assert isinstance(bars[0], DailyPrice)
+    finally:
+        db.execute(delete(DailyPrice).where(DailyPrice.stock_code == code))
+        db.commit()

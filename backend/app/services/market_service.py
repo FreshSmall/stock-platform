@@ -106,11 +106,22 @@ def get_kline(
     code: str,
     start: date | None = None,
     end: date | None = None,
-) -> list[DailyPrice]:
-    """Return daily OHLCV bars for ``code``, optionally bounded by date range.
+    period: str = "d",
+) -> list:
+    """Return OHLCV bars for ``code``, optionally bounded by date range.
 
-    The result is ordered ascending by ``trade_date`` so it can be plotted
-    left-to-right directly. Both bounds are inclusive.
+    ``period`` selects the bar size:
+
+    - ``"d"`` (default): daily bars straight from ``daily_prices`` (returns
+      :class:`DailyPrice` ORM rows).
+    - ``"w"`` / ``"m"``: weekly / monthly bars aggregated from the daily bars
+      via pandas ``resample`` (returns plain dicts with the same field names).
+      Weekly bars are anchored on Friday (W-FRI); a week with no Friday bar
+      still resolves to its last trading day. OHLC is open=first, high=max,
+      low=min, close=last; volume/amount are summed.
+
+    The result is ordered ascending by date so it can be plotted left-to-right.
+    Both bounds are inclusive.
     """
     stmt = select(DailyPrice).where(DailyPrice.stock_code == code)
     if start:
@@ -118,7 +129,71 @@ def get_kline(
     if end:
         stmt = stmt.where(DailyPrice.trade_date <= end)
     stmt = stmt.order_by(DailyPrice.trade_date.asc())
-    return list(db.execute(stmt).scalars().all())
+    daily = list(db.execute(stmt).scalars().all())
+
+    if period == "d" or not daily:
+        return daily
+
+    # Aggregate to weekly/monthly. Build a DataFrame keyed by trade_date.
+    import pandas as pd
+
+    df = pd.DataFrame(
+        [
+            {
+                "trade_date": pd.Timestamp(r.trade_date),
+                "open": float(r.open) if r.open is not None else None,
+                "close": float(r.close) if r.close is not None else None,
+                "high": float(r.high) if r.high is not None else None,
+                "low": float(r.low) if r.low is not None else None,
+                "volume": float(r.volume) if r.volume is not None else 0.0,
+                "amount": float(r.amount) if r.amount is not None else 0.0,
+                "pct_change": float(r.pct_change) if r.pct_change is not None else None,
+                "turnover": float(r.turnover) if r.turnover is not None else None,
+            }
+            for r in daily
+        ]
+    )
+    df = df.dropna(subset=["open", "close", "high", "low"]).set_index("trade_date").sort_index()
+
+    rule = "W-FRI" if period == "w" else "ME"
+    agg = df.resample(rule).agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+            "amount": "sum",
+            "pct_change": "sum",
+            "turnover": "sum",
+        }
+    ).dropna(subset=["open", "close"])
+
+    # resample labels the bucket with the period END (Friday / month-end),
+    # which may not be a real trading day. Re-label to the last actual trading
+    # day in each bucket so the bar's date is a real session.
+    last_dates = df.groupby(pd.Grouper(freq=rule)).apply(lambda g: g.index[-1] if not g.empty else None)
+    agg.index = last_dates.reindex(agg.index).values
+    agg = agg.dropna(subset=["open"])  # drop empty buckets
+
+    # Emit plain dicts shaped like DailyPrice fields, but typed loosely so the
+    # caller (K-line serializer) can treat daily/weekly uniformly.
+    out: list[dict] = []
+    for ts, row in agg.iterrows():
+        out.append(
+            {
+                "trade_date": ts.date() if hasattr(ts, "date") else ts,
+                "open": row["open"],
+                "close": row["close"],
+                "high": row["high"],
+                "low": row["low"],
+                "volume": int(row["volume"]) if row["volume"] == row["volume"] else None,
+                "amount": row["amount"],
+                "pct_change": row["pct_change"] if row["pct_change"] == row["pct_change"] else None,
+                "turnover": row["turnover"] if row["turnover"] == row["turnover"] else None,
+            }
+        )
+    return out
 
 
 def get_indices(db: Session) -> list[dict]:

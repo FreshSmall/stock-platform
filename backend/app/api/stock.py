@@ -84,23 +84,34 @@ def get_info(code: str, db: Session = Depends(get_db)) -> dict:
 @router.get("/{code}/kline")
 def get_kline(
     code: str,
+    period: str = Query("d", pattern="^(d|w|m)$"),
     start: date | None = None,
     end: date | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Get daily K-line bars for a stock, optionally bounded by date range."""
-    rows = market_service.get_kline(db, code, start, end)
+    """Get K-line bars for a stock, optionally bounded by date range.
+
+    ``period`` selects the bar size: ``d`` (daily, default), ``w`` (weekly) or
+    ``m`` (monthly). Weekly/monthly bars are aggregated from daily bars by the
+    service layer.
+    """
+    rows = market_service.get_kline(db, code, start, end, period=period)
+    # Daily rows are ORM objects; weekly/monthly are plain dicts. Normalize to
+    # the KLineItem schema via attribute/dict access.
+    def _get(r, k):
+        return r[k] if isinstance(r, dict) else getattr(r, k)
+
     items = [
         KLineItem(
-            trade_date=r.trade_date,
-            open=r.open,
-            close=r.close,
-            high=r.high,
-            low=r.low,
-            volume=r.volume,
-            amount=r.amount,
-            pct_change=r.pct_change,
-            turnover=r.turnover,
+            trade_date=_get(r, "trade_date"),
+            open=_get(r, "open"),
+            close=_get(r, "close"),
+            high=_get(r, "high"),
+            low=_get(r, "low"),
+            volume=_get(r, "volume"),
+            amount=_get(r, "amount"),
+            pct_change=_get(r, "pct_change"),
+            turnover=_get(r, "turnover"),
         )
         for r in rows
     ]
