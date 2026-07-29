@@ -48,10 +48,17 @@ def submit(
 
 
 @router.get("/{run_id}")
-def get_status(run_id: str, db: Session = Depends(get_db)) -> dict:
-    """Poll a run's status and, once ``done``, its metrics/equity/trades."""
+def get_status(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> dict:
+    """Poll a run's status and, once ``done``, its metrics/equity/trades (owner only)."""
     run = backtest_service.get_run(db, run_id)
     if run is None:
+        return _ok(None, msg="run not found")
+    if run.user_id is not None and run.user_id != user_id:
+        # Don't leak existence of other users' runs.
         return _ok(None, msg="run not found")
     result = backtest_service.get_result(db, run_id)
     data = {

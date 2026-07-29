@@ -81,9 +81,16 @@ def list_sessions(
 
 @router.get("/sessions/{session_id}/messages")
 def get_messages(
-    session_id: str, db: Session = Depends(get_db)
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ) -> dict:
-    """Return the full message history of one session."""
+    """Return the full message history of one session (owner only)."""
+    session = assistant_service.get_session(db, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.user_id != user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
     msgs = assistant_service.list_messages(db, session_id)
     return _ok(
         [

@@ -81,9 +81,44 @@ def test_api_get_messages_history(auth_headers):
         "/api/v1/assistant/sessions", json={"title": "h"}, headers=auth_headers
     ).json()["data"]["session_id"]
     try:
-        r = client.get(f"/api/v1/assistant/sessions/{sid}/messages")
+        r = client.get(f"/api/v1/assistant/sessions/{sid}/messages", headers=auth_headers)
         assert r.status_code == 200
         assert r.json()["data"] == []  # nothing yet
+    finally:
+        _cleanup(sid)
+
+
+def test_api_get_messages_requires_auth():
+    # No token → 401
+    r = client.get("/api/v1/assistant/sessions/cs-doesnotexist/messages")
+    assert r.status_code == 401
+
+
+def test_api_get_messages_forbidden_for_other_owner(auth_headers):
+    # Create a session as user A, then try to read it as user B.
+    sid = client.post(
+        "/api/v1/assistant/sessions", json={"title": "h"}, headers=auth_headers
+    ).json()["data"]["session_id"]
+    try:
+        # Register a second user and get a token.
+        import uuid as _uuid
+        other_user = f"other_{_uuid.uuid4().hex[:8]}"
+        client.post("/api/v1/auth/register", json={"username": other_user, "password": "Other123!"})
+        other_token = client.post(
+            "/api/v1/auth/login", json={"username": other_user, "password": "Other123!"}
+        ).json()["data"]["token"]
+        r = client.get(
+            f"/api/v1/assistant/sessions/{sid}/messages",
+            headers={"Authorization": f"Bearer {other_token}"},
+        )
+        assert r.status_code == 403
+        # cleanup other user
+        from app.core.database import SessionLocal
+        from app.models.user import SaUser
+        db = SessionLocal()
+        db.query(SaUser).filter_by(username=other_user).delete()
+        db.commit()
+        db.close()
     finally:
         _cleanup(sid)
 
