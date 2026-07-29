@@ -113,6 +113,245 @@ def fetch_financial_abstract(symbol: str) -> list[dict]:
     )
 
 
+# ============================================================================
+# V1.5 data-source fetchers.
+#
+# Each follows the same shape as ``fetch_daily_quotes``: throttle + retry, then
+# return a list of plain dicts keyed by the canonical (english) column names so
+# the sync layer never touches Chinese column headers. Column mappings are taken
+# from akshare 1.18.80; the eastmoney-backed endpoints occasionally rename
+# columns between versions, so callers must tolerate missing keys (``.get``).
+# ============================================================================
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_minute_quotes(symbol: str, period: int = 5) -> list[dict]:
+    """Fetch intraday minute OHLCV for one A-share symbol.
+
+    :param symbol: 6-digit code, e.g. ``'600519'``.
+    :param period: bar size in minutes; akshare accepts 1/5/15/30/60.
+    :return: list of dicts with keys ``stock_code, period, trade_date,
+        trade_time, open, close, high, low, volume, amount``.
+        ``trade_time`` is a ``str`` like ``'2026-07-28 14:30'`` (parsed
+        downstream). Empty list if upstream was empty.
+
+    Source: ``ak.stock_zh_a_hist_min_em(symbol, period=str(period), adjust='qfq')``.
+    Columns (akshare 1.18.80): ``时间, 开盘, 收盘, 最高, 最低, 成交量, 成交额,
+    最新价``. ``时间`` carries both the date and the minute.
+    """
+    _throttle()
+    df = ak.stock_zh_a_hist_min_em(
+        symbol=symbol, period=str(period), adjust="qfq"
+    )
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        trade_time = str(row.get("时间", ""))
+        out.append(
+            {
+                "stock_code": symbol,
+                "period": period,
+                "trade_time": trade_time,
+                "trade_date": _trade_date_from_time(trade_time),
+                "open": _to_float(row.get("开盘")),
+                "close": _to_float(row.get("收盘")),
+                "high": _to_float(row.get("最高")),
+                "low": _to_float(row.get("最低")),
+                "volume": _to_int(row.get("成交量")),
+                "amount": _to_float(row.get("成交额")),
+            }
+        )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_dragon_tiger(trade_date: str) -> list[dict]:
+    """Fetch the dragon-tiger (龙虎榜) stock list for one trade day.
+
+    :param trade_date: ``'YYYYMMDD'``.
+    :return: list of dicts with keys ``stock_code, stock_name, trade_date,
+        reason, net_buy, buy_amount, sell_amount``. Empty list if none listed.
+
+    Source: ``ak.stock_lhb_detail_em(start_date, end_date)``. Verified columns
+    (akshare 1.18.80, live 2026-07-28): ``代码, 名称, 上榜日, 上榜原因,
+    龙虎榜净买额, 龙虎榜买入额, 龙虎榜卖出额``.
+    """
+    _throttle()
+    df = ak.stock_lhb_detail_em(
+        start_date=trade_date, end_date=trade_date
+    )
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        out.append(
+            {
+                "stock_code": str(row.get("代码", "")).zfill(6),
+                "stock_name": row.get("名称"),
+                "trade_date": _to_date_str(row.get("上榜日"), trade_date),
+                "reason": row.get("上榜原因"),
+                "net_buy": _to_float(row.get("龙虎榜净买额")),
+                "buy_amount": _to_float(row.get("龙虎榜买入额")),
+                "sell_amount": _to_float(row.get("龙虎榜卖出额")),
+            }
+        )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_dragon_tiger_seats(stock_code: str, trade_date: str) -> dict:
+    """Fetch top-5 buy/sell seats for one dragon-tiger stock on one day.
+
+    :param stock_code: 6-digit code.
+    :param trade_date: ``'YYYYMMDD'``.
+    :return: ``{"buy": [<seat dict>...], "sell": [<seat dict>...]}`` where each
+        seat dict has ``seat_name, buy_amount, sell_amount, net_amount,
+        is_institution``. Empty lists if no detail.
+
+    Source: ``ak.stock_lhb_stock_detail_em(symbol, date, flag)`` called twice
+    (flag='买入' and flag='卖出'). Columns (akshare 1.18.80): ``营业部名称,
+    买入金额, 卖出金额, 净额``. A seat whose name contains ``机构`` is flagged
+    ``is_institution=1``.
+    """
+    _throttle()
+    seats: dict[str, list[dict]] = {"buy": [], "sell": []}
+    for flag, key in (("买入", "buy"), ("卖出", "sell")):
+        df = ak.stock_lhb_stock_detail_em(
+            symbol=stock_code, date=trade_date, flag=flag
+        )
+        if df is None or df.empty:
+            continue
+        for _, row in df.iterrows():
+            name = str(row.get("营业部名称", ""))
+            seats[key].append(
+                {
+                    "seat_name": name,
+                    "buy_amount": _to_float(row.get("买入金额")),
+                    "sell_amount": _to_float(row.get("卖出金额")),
+                    "net_amount": _to_float(row.get("净额")),
+                    "is_institution": 1 if "机构" in name else 0,
+                }
+            )
+    return seats
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_north_flow() -> list[dict]:
+    """Fetch daily northbound (沪深股通) net inflow history.
+
+    :return: list of dicts with keys ``trade_date, channel, net_buy,
+        buy_amount, sell_amount``. ``channel`` is ``sh`` (沪股通) or ``sz``
+        (深股通). Most recent day last.
+
+    Source: ``ak.stock_hsgt_hist_em(symbol='沪股通'/'深股通')``. Columns
+    (akshare 1.18.80): ``日期, 成交净买额, 买入成交额, 卖出成交额``.
+    """
+    out: list[dict] = []
+    for cn, channel in (("沪股通", "sh"), ("深股通", "sz")):
+        _throttle()
+        df = ak.stock_hsgt_hist_em(symbol=cn)
+        if df is None or df.empty:
+            continue
+        for _, row in df.iterrows():
+            out.append(
+                {
+                    "trade_date": _to_date_str(row.get("日期"), None),
+                    "channel": channel,
+                    "net_buy": _to_float(row.get("成交净买额")),
+                    "buy_amount": _to_float(row.get("买入成交额")),
+                    "sell_amount": _to_float(row.get("卖出成交额")),
+                }
+            )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_money_flow_detail(symbol: str, market: str) -> list[dict]:
+    """Fetch four-tier order net inflow for one stock.
+
+    :param symbol: 6-digit code.
+    :param market: ``'sh'`` / ``'sz'``.
+    :return: list of dicts with keys ``trade_date, super_net, big_net,
+        medium_net, small_net``. Most recent day last.
+
+    Source: ``ak.stock_individual_fund_flow(stock, market)``. Columns
+    (akshare 1.18.80): ``日期, 收盘价, 涨跌幅, 主力净流入-净额,
+    主力净流入-净占比, 超大单净流入-净额, 大单净流入-净额, 中单净流入-净额,
+    小单净流入-净额``.
+    """
+    _throttle()
+    df = ak.stock_individual_fund_flow(stock=symbol, market=market)
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        out.append(
+            {
+                "stock_code": symbol,
+                "trade_date": _to_date_str(row.get("日期"), None),
+                "super_net": _to_float(row.get("超大单净流入-净额")),
+                "big_net": _to_float(row.get("大单净流入-净额")),
+                "medium_net": _to_float(row.get("中单净流入-净额")),
+                "small_net": _to_float(row.get("小单净流入-净额")),
+            }
+        )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_sector_list(sector_type: str = "industry") -> list[dict]:
+    """Fetch the sector (板块) definition list.
+
+    :param sector_type: ``'industry'`` or ``'concept'``.
+    :return: list of dicts with keys ``sector_code, sector_name, sector_type``.
+
+    Source: ``ak.stock_board_industry_name_em()`` / ``stock_board_concept_name_em()``.
+    Columns (akshare 1.18.80): ``板块名称, 板块代码``.
+    """
+    _throttle()
+    if sector_type == "concept":
+        df = ak.stock_board_concept_name_em()
+    else:
+        df = ak.stock_board_industry_name_em()
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        out.append(
+            {
+                "sector_code": str(row.get("板块代码", "")),
+                "sector_name": str(row.get("板块名称", "")),
+                "sector_type": sector_type,
+            }
+        )
+    return out
+
+
 def _to_float(v: Any) -> float | None:
     try:
         if v is None:
@@ -129,3 +368,37 @@ def _to_int(v: Any) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def _to_date_str(v: Any, fallback: str | None) -> str | None:
+    """Coerce a date-like value to a ``'YYYY-MM-DD'`` string.
+
+    akshare returns ``日期``/``上榜日`` as a ``datetime.date`` (or sometimes a
+    pandas ``Timestamp``); normalise to ISO string. Returns ``fallback`` (the
+    caller's request date as ``YYYYMMDD``) when parsing fails — matching the
+    request date is usually correct for same-day fetches.
+    """
+    if v is None:
+        return fallback[:4] + "-" + fallback[4:6] + "-" + fallback[6:8] if fallback else None
+    try:
+        s = str(v)
+        # already ISO?
+        if len(s) >= 10 and s[4] == "-":
+            return s[:10]
+    except Exception:
+        pass
+    try:
+        return getattr(v, "strftime", lambda f: None)("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _trade_date_from_time(trade_time: str) -> str | None:
+    """Extract the ``'YYYY-MM-DD'`` trade date from a minute-bar timestamp.
+
+    ``trade_time`` from akshare looks like ``'2026-07-28 14:30'``. Returns the
+    leading date portion, or None if unparseable.
+    """
+    if not trade_time or len(trade_time) < 10:
+        return None
+    return trade_time[:10]
