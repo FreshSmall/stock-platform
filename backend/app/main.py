@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
 
 from app.api.analysis import router as analysis_router
+from app.api.admin import router as admin_router
 from app.api.assistant import router as assistant_router
 from app.api.auth import router as auth_router
 from app.api.backtest import router as backtest_router
@@ -73,4 +74,5 @@ router.include_router(analysis_router)
 router.include_router(assistant_router)
 router.include_router(dragon_tiger_router)
 router.include_router(sector_router)
+router.include_router(admin_router)
 app.include_router(router)
