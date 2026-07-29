@@ -238,12 +238,19 @@ export default function Assistant() {
   }, [messages]);
 
   return (
-    <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 132px)' }}>
+    <div
+      style={{
+        display: 'flex',
+        gap: 16,
+        height: '100%',
+        minHeight: 0,
+      }}
+    >
       {/* Sessions list (fixed-width rail; V1 simplicity — no drawer needed). */}
       <Card
         size="small"
-        style={{ width: 220, flexShrink: 0 }}
-        styles={{ body: { padding: 0 } }}
+        style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
+        styles={{ body: { padding: 0, flex: 1, overflow: 'auto' } }}
         title="会话"
         extra={
           <Button size="small" type="primary" onClick={newSession}>
@@ -292,12 +299,14 @@ export default function Assistant() {
       <Card
         size="small"
         style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}
-        styles={{ body: { flex: 1, padding: 0, overflow: 'hidden' } }}
+        styles={{ body: { flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' } }}
         title={<Title level={5} style={{ margin: 0 }}>AI 助手</Title>}
       >
+        {/* Scrollable message area. */}
         <div
           style={{
             flex: 1,
+            minHeight: 0,
             overflowY: 'auto',
             padding: 16,
             background: '#fafafa',
@@ -311,8 +320,8 @@ export default function Assistant() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Composer */}
-        <div style={{ borderTop: '1px solid #f0f0f0', padding: 12 }}>
+        {/* Composer (fixed at bottom of the card). */}
+        <div style={{ flexShrink: 0, borderTop: '1px solid #f0f0f0', padding: 12, background: '#fff' }}>
           <Space size={[8, 8]} wrap style={{ marginBottom: 8 }}>
             {EXAMPLE_CHIPS.map((c) => (
               <Tag
@@ -362,7 +371,15 @@ function MessageList({
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {messages.map((m) => (
-        <MessageBubble key={m.id} message={m} sending={sending} />
+        <div
+          key={m.id}
+          style={{
+            display: 'flex',
+            justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
+          }}
+        >
+          <MessageBubble message={m} sending={sending} />
+        </div>
       ))}
     </Space>
   );
@@ -370,67 +387,67 @@ function MessageList({
 
 function MessageBubble({ message, sending }: { message: ChatMessage; sending: boolean }) {
   const isUser = message.role === 'user';
-  const bubbleStyle: React.CSSProperties = {
-    maxWidth: '80%',
-    padding: '10px 14px',
-    borderRadius: 10,
-    background: isUser ? '#1677ff' : '#fff',
-    color: isUser ? '#fff' : 'inherit',
-    border: isUser ? 'none' : '1px solid #f0f0f0',
-  };
 
   return (
-    <div
+    <Card
+      size="small"
       style={{
-        display: 'flex',
-        justifyContent: isUser ? 'flex-end' : 'flex-start',
+        maxWidth: '85%',
+        borderColor: isUser ? '#91caff' : '#f0f0f0',
+        background: isUser ? '#f0f7ff' : '#fff',
       }}
+      styles={{ body: { padding: '10px 14px' } }}
+      title={
+        <Space size={6}>
+          <Tag color={isUser ? 'blue' : 'green'} style={{ margin: 0 }}>
+            {isUser ? '我' : 'AI 助手'}
+          </Tag>
+        </Space>
+      }
     >
-      <div style={bubbleStyle}>
-        {isUser ? (
-          <span style={{ whiteSpace: 'pre-wrap' }}>{message.content}</span>
-        ) : (
-          <>
-            {/* Tool calls render inline above the streamed text. */}
-            {message.toolSteps.map((step, i) => (
-              <ToolStepView key={i} step={step} />
-            ))}
+      {isUser ? (
+        <span style={{ whiteSpace: 'pre-wrap' }}>{message.content}</span>
+      ) : (
+        <>
+          {/* Tool calls render inline above the streamed text. */}
+          {message.toolSteps.map((step, i) => (
+            <ToolStepView key={i} step={step} />
+          ))}
 
-            {message.content ? (
-              <div className="assistant-md">
-                <ReactMarkdown>{message.content}</ReactMarkdown>
-              </div>
-            ) : (
-              !message.error &&
-              sending && (
-                <Text type="secondary">
-                  正在思考…
-                  <span className="blink">▍</span>
-                </Text>
-              )
-            )}
-
-            {message.error && (
-              <Alert
-                type="error"
-                showIcon
-                message={message.error}
-                style={{ margin: '4px 0' }}
-              />
-            )}
-
-            {!isUser && (message.content || message.error) && (
-              <Text
-                type="secondary"
-                style={{ display: 'block', marginTop: 8, fontSize: 12 }}
-              >
-                <RiskNotice />
+          {message.content ? (
+            <div className="assistant-md">
+              <ReactMarkdown>{message.content}</ReactMarkdown>
+            </div>
+          ) : (
+            !message.error &&
+            sending && (
+              <Text type="secondary">
+                正在思考…
+                <span className="blink">▍</span>
               </Text>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+            )
+          )}
+
+          {message.error && (
+            <Alert
+              type="error"
+              showIcon
+              message={message.error}
+              style={{ margin: '4px 0' }}
+            />
+          )}
+
+          {!isUser && (message.content || message.error) && (
+            <Text
+              type="secondary"
+              style={{ display: 'block', marginTop: 8, fontSize: 12 }}
+            >
+              <RiskNotice />
+            </Text>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

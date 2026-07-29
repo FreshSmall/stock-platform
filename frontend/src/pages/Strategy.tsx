@@ -79,7 +79,7 @@ export default function Strategy() {
       </div>
       <Row gutter={[16, 24]}>
         {q.data.map((s) => (
-          <Col key={s.name} xs={24} sm={12} lg={8}>
+          <Col key={s.name} xs={24} sm={12} lg={8} style={{ display: 'flex' }}>
             <StrategyCard
               meta={s}
               onBacktest={() => nav(`/backtest?strategy=${s.name}`)}

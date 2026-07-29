@@ -19,13 +19,14 @@ export default function AppLayout() {
   const { username, logout } = useAuthStore();
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ height: '100vh' }}>
       <Header
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 16,
           background: '#001529',
+          flex: '0 0 64px',
         }}
       >
         <div
@@ -56,7 +57,7 @@ export default function AppLayout() {
           )}
         </div>
       </Header>
-      <Layout>
+      <Layout style={{ flex: 1, minHeight: 0 }}>
         <Sider width={120} theme="dark">
           <Menu
             theme="dark"
@@ -66,7 +67,14 @@ export default function AppLayout() {
             onClick={({ key }) => nav(key)}
           />
         </Sider>
-        <Content style={{ padding: 16, background: '#f0f2f5' }}>
+        <Content
+          style={{
+            padding: 16,
+            background: '#f0f2f5',
+            overflow: 'auto',
+            minHeight: 0,
+          }}
+        >
           <Outlet />
         </Content>
       </Layout>
@@ -77,6 +85,7 @@ export default function AppLayout() {
           background: '#fffbe6',
           color: '#ad6800',
           borderTop: '1px solid #ffe58f',
+          flex: '0 0 auto',
         }}
       >
         <RiskNotice />
