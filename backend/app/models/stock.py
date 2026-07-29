@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Date, DateTime, Numeric, String
+from sqlalchemy import BigInteger, Date, DateTime, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -76,4 +76,38 @@ class StockPool(Base):
         return (
             f"StockPool(id={self.id!r}, pool_name={self.pool_name!r}, "
             f"trade_date={self.trade_date!r}, stock_code={self.stock_code!r})"
+        )
+
+
+class ChipDistribution(Base):
+    """Chip-distribution (CYQ) snapshot for one stock on one trade day.
+
+    Maps the read-only ``chip_distribution`` table (populated by an external
+    CYQ pipeline, ≈390k rows). ``distribution`` is a JSON/text histogram of
+    share count by price; the scalar fields (``profit_ratio``, ``avg_cost``,
+    ``concentration_90``) are pre-computed rollups consumed directly by the
+    chip-peak display (BP-V1.5-007). Read-only: never written by this service.
+    """
+
+    __tablename__ = "chip_distribution"
+    __table_args__ = ({"info": {"readonly": True}},)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    trade_date: Mapped[Optional[date]] = mapped_column(Date)
+    profit_ratio: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 6))
+    avg_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    cost_90_low: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    cost_90_high: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    concentration_90: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
+    cost_70_low: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    cost_70_high: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    concentration_70: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
+    distribution: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"ChipDistribution(id={self.id!r}, stock_code={self.stock_code!r}, "
+            f"trade_date={self.trade_date!r})"
         )
