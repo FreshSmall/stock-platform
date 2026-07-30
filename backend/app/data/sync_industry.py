@@ -48,7 +48,9 @@ def fetch_industry(symbol: str) -> dict | None:
         returns a 2-col (item/value) frame; we pick the ``行业`` row.
     """
     akshare_client._throttle()
-    df = akshare_client.ak.stock_individual_info_em(symbol=symbol)
+    df = akshare_client._with_timeout(
+        akshare_client.ak.stock_individual_info_em, symbol=symbol
+    )
     if df is None or df.empty:
         return None
     # frame columns: item, value — find the 行业 row.

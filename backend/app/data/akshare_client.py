@@ -15,6 +15,7 @@ Note: ``日期`` is returned as a Python ``str`` ('YYYY-MM-DD'), NOT a Timestamp
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any
 
 import akshare as ak
@@ -25,6 +26,45 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Hard wall-clock timeout guard for akshare (which uses ``requests``).
+#
+# akshare already passes ``timeout=15`` to requests, but a scalar timeout is
+# the *idle gap between bytes* — a server that drips one byte every 14s never
+# trips it and the call hangs for minutes (observed against eastmoney's
+# anti-bot). We wrap each fetch in a wall-clock deadline: a worker thread runs
+# the akshare call while the caller waits via ``future.result(timeout=...)``.
+# On timeout we abandon the call (the zombie thread is the cost — bounded by
+# the pool size) and the callers' ``@retry`` treats it as a retryable failure.
+# ---------------------------------------------------------------------------
+
+_FETCH_TIMEOUT_SEC: float = 30.0
+# Small shared pool; threads that time out become zombies until their socket
+# closes, so keep this low.
+_timeout_executor = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="akshare-fetch"
+)
+
+
+def _with_timeout(func, *args, **kwargs):
+    """Run ``func(*args, **kwargs)`` under a hard wall-clock deadline.
+
+    Raises :class:`TimeoutError` if the call exceeds ``_FETCH_TIMEOUT_SEC``.
+    """
+    fut = _timeout_executor.submit(func, *args, **kwargs)
+    try:
+        return fut.result(timeout=_FETCH_TIMEOUT_SEC)
+    except FuturesTimeout:
+        logger.warning(
+            "fetch %s exceeded %.0fs wall-clock; abandoning",
+            getattr(func, "__name__", "call"),
+            _FETCH_TIMEOUT_SEC,
+        )
+        raise TimeoutError(
+            f"{getattr(func, '__name__', 'call')} exceeded {_FETCH_TIMEOUT_SEC}s"
+        )
+
 
 # Simple throttle between calls to keep us off eastmoney's naughty list.
 _MIN_INTERVAL_SEC: float = 0.5
@@ -60,7 +100,8 @@ def fetch_daily_quotes(
         upstream frame was empty.
     """
     _throttle()
-    df = ak.stock_zh_a_hist(
+    df = _with_timeout(
+        ak.stock_zh_a_hist,
         symbol=symbol,
         period="daily",
         start_date=start_date,
@@ -144,8 +185,11 @@ def fetch_minute_quotes(symbol: str, period: int = 5) -> list[dict]:
     最新价``. ``时间`` carries both the date and the minute.
     """
     _throttle()
-    df = ak.stock_zh_a_hist_min_em(
-        symbol=symbol, period=str(period), adjust="qfq"
+    df = _with_timeout(
+        ak.stock_zh_a_hist_min_em,
+        symbol=symbol,
+        period=str(period),
+        adjust="qfq",
     )
     if df is None or df.empty:
         return []
@@ -186,8 +230,10 @@ def fetch_dragon_tiger(trade_date: str) -> list[dict]:
     龙虎榜净买额, 龙虎榜买入额, 龙虎榜卖出额``.
     """
     _throttle()
-    df = ak.stock_lhb_detail_em(
-        start_date=trade_date, end_date=trade_date
+    df = _with_timeout(
+        ak.stock_lhb_detail_em,
+        start_date=trade_date,
+        end_date=trade_date,
     )
     if df is None or df.empty:
         return []
@@ -229,8 +275,11 @@ def fetch_dragon_tiger_seats(stock_code: str, trade_date: str) -> dict:
     _throttle()
     seats: dict[str, list[dict]] = {"buy": [], "sell": []}
     for flag, key in (("买入", "buy"), ("卖出", "sell")):
-        df = ak.stock_lhb_stock_detail_em(
-            symbol=stock_code, date=trade_date, flag=flag
+        df = _with_timeout(
+            ak.stock_lhb_stock_detail_em,
+            symbol=stock_code,
+            date=trade_date,
+            flag=flag,
         )
         if df is None or df.empty:
             continue
@@ -266,7 +315,7 @@ def fetch_north_flow() -> list[dict]:
     out: list[dict] = []
     for cn, channel in (("沪股通", "sh"), ("深股通", "sz")):
         _throttle()
-        df = ak.stock_hsgt_hist_em(symbol=cn)
+        df = _with_timeout(ak.stock_hsgt_hist_em, symbol=cn)
         if df is None or df.empty:
             continue
         for _, row in df.iterrows():
@@ -301,7 +350,7 @@ def fetch_money_flow_detail(symbol: str, market: str) -> list[dict]:
     小单净流入-净额``.
     """
     _throttle()
-    df = ak.stock_individual_fund_flow(stock=symbol, market=market)
+    df = _with_timeout(ak.stock_individual_fund_flow, stock=symbol, market=market)
     if df is None or df.empty:
         return []
     out: list[dict] = []
@@ -335,9 +384,9 @@ def fetch_sector_list(sector_type: str = "industry") -> list[dict]:
     """
     _throttle()
     if sector_type == "concept":
-        df = ak.stock_board_concept_name_em()
+        df = _with_timeout(ak.stock_board_concept_name_em)
     else:
-        df = ak.stock_board_industry_name_em()
+        df = _with_timeout(ak.stock_board_industry_name_em)
     if df is None or df.empty:
         return []
     out: list[dict] = []

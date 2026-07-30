@@ -107,6 +107,33 @@ def list_tasks() -> list[dict]:
         db.close()
 
 
+# Wall-clock cap for a whole task run (seconds). A task may loop over many
+# stocks; cap the total so a stuck run can't block the scheduler thread or an
+# admin HTTP request indefinitely. Individual akshare fetches are already
+# bounded by akshare_client._with_timeout; this is the outer backstop.
+_TASK_DEADLINE_SEC: float = 300.0
+
+
+def _run_with_deadline(runner, task_name: str):
+    """Run a task runner under a wall-clock deadline.
+
+    Uses a worker thread + ``future.result(timeout=...)``. On timeout raises
+    :class:`TimeoutError`; the (possibly still-running) worker thread is
+    abandoned, same trade-off as akshare_client._with_timeout.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+    # Dedicated single-worker pool per call so a stuck task can't starve others.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"task-{task_name}") as ex:
+        fut = ex.submit(runner)
+        try:
+            return fut.result(timeout=_TASK_DEADLINE_SEC)
+        except FuturesTimeout:
+            raise TimeoutError(
+                f"task {task_name} exceeded {_TASK_DEADLINE_SEC}s"
+            )
+
+
 def run_task(task_name: str, triggered_by: str) -> dict:
     """Execute a task synchronously and log the outcome.
 
@@ -134,7 +161,11 @@ def run_task(task_name: str, triggered_by: str) -> dict:
     status = "success"
     error = None
     try:
-        rows = runner()
+        rows = _run_with_deadline(runner, task_name)
+    except TimeoutError as e:
+        status = "failed"
+        error = f"task exceeded {_TASK_DEADLINE_SEC}s wall-clock"
+        logger.warning("admin task %s timed out", task_name)
     except Exception as e:  # noqa: BLE001 - record any failure
         status = "failed"
         error = str(e)
