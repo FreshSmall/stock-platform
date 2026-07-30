@@ -42,7 +42,17 @@ def register(payload: CredentialsIn, db: Session = Depends(get_db)) -> dict:
 def login(payload: CredentialsIn, db: Session = Depends(get_db)) -> dict:
     """Verify credentials and return ``{token, user}``. ``BizError(1002)`` on miss."""
     user, token = user_service.login(db, payload.username, payload.password)
-    return _ok({"token": token, "user": {"id": user.id, "username": user.username}})
+    return _ok(
+        {
+            "token": token,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "role": user.role,
+                "status": user.status,
+            },
+        }
+    )
 
 
 @router.get("/me")
@@ -54,4 +64,11 @@ def me(
     user = user_service.get_by_id(db, user_id)
     if user is None:
         return _ok(None, msg="user not found")
-    return _ok({"id": user.id, "username": user.username})
+    return _ok(
+        {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "status": user.status,
+        }
+    )

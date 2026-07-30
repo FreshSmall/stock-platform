@@ -4,6 +4,11 @@ import type { ReactElement } from 'react';
 import AppLayout from './components/Layout/AppLayout';
 import { useAuthStore } from './store/authStore';
 import Market from './pages/Market';
+import Stocks from './pages/Stocks';
+import Sector from './pages/Sector';
+import SectorDetail from './pages/SectorDetail';
+import DragonTiger from './pages/DragonTiger';
+import Admin from './pages/Admin';
 import StockDetail from './pages/StockDetail';
 import Analysis from './pages/Analysis';
 import Strategy from './pages/Strategy';
@@ -32,6 +37,11 @@ export default function App() {
             }
           >
             <Route path="/market" element={<Market />} />
+            <Route path="/stocks" element={<Stocks />} />
+            <Route path="/sector" element={<Sector />} />
+            <Route path="/sector/:code" element={<SectorDetail />} />
+            <Route path="/dragon-tiger" element={<DragonTiger />} />
+            <Route path="/admin" element={<Admin />} />
             <Route path="/stock/:code" element={<StockDetail />} />
             <Route path="/analysis/:code" element={<Analysis />} />
             <Route path="/strategy" element={<Strategy />} />

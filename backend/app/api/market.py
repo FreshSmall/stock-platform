@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.schemas.market import HotStock, IndexQuote, MarketSummary
-from app.services import market_service
+from app.services import market_data_service, market_service, sentiment_service
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -63,3 +63,42 @@ def hot_stocks(
         for r in market_service.get_hot_stocks(db, sort, limit)
     ]
     return _ok(items)
+
+
+@router.get("/sentiment")
+def sentiment(db: Session = Depends(get_db)) -> dict:
+    """Market sentiment rollup for the latest trading day (BP-V1.5-006/011).
+
+    Returns the most recent persisted ``sa_market_sentiment`` row. If none has
+    been computed yet (e.g. before the first scheduled run), returns ``None``.
+    """
+    from app.models.sentiment import SaMarketSentiment
+    from sqlalchemy import select
+
+    row = db.execute(
+        select(SaMarketSentiment).order_by(SaMarketSentiment.trade_date.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return _ok(None, msg="no sentiment data")
+    return _ok(
+        {
+            "trade_date": row.trade_date,
+            "limit_up_count": row.limit_up_count,
+            "limit_down_count": row.limit_down_count,
+            "failed_limit_count": row.failed_limit_count,
+            "seal_rate": float(row.seal_rate) if row.seal_rate is not None else None,
+            "max_streak": row.max_streak,
+            "up_count": row.up_count,
+            "down_count": row.down_count,
+            "streak_ladder": row.streak_ladder,
+        }
+    )
+
+
+@router.get("/north-flow")
+def north_flow(
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Daily northbound net inflow (沪/深股通) for the recent ``days``."""
+    return _ok(market_data_service.get_north_flow(db, days))

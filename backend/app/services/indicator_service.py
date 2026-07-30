@@ -139,3 +139,69 @@ def death_cross(fast: pd.Series, slow: pd.Series) -> pd.Series:
     prev_ge = fast.shift(1) >= slow.shift(1)
     now_lt = fast < slow
     return (prev_ge & now_lt).fillna(False)
+
+
+# --------------------------------------------------------------------------
+# V1.5 indicators: RSI, BOLL (EMA already exists above; reused by MACD).
+# --------------------------------------------------------------------------
+
+
+def calc_rsi(
+    closes: pd.Series, periods: Iterable[int] = (6, 12, 24)
+) -> pd.DataFrame:
+    """Relative Strength Index (Wilder's smoothing).
+
+    RSI = 100 - 100/(1 + RS),  RS = avg_gain / avg_loss, where the averages use
+    Wilder's smoothing (EMA-like with alpha = 1/period). One ``rsi{p}`` column
+    per period, aligned to ``closes`` with NaN for the leading ``p`` warmup bars.
+
+    Convention matches 通达信/同花顺 (which also use Wilder smoothing). A flat or
+    all-up series yields RSI -> 100 (no losses); the guard maps a zero avg_loss
+    to RSI=100 to avoid div-by-zero.
+
+    Args:
+        closes: closing-price series.
+        periods: windows (default 6/12/24).
+    """
+    closes = pd.Series(closes, dtype=float)
+    delta = closes.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+
+    cols = {}
+    for p in periods:
+        # Wilder smoothing: first avg = SMA over first `p` deltas; thereafter
+        # an EMA with alpha = 1/p. We use ewm with com=p-1 (== alpha=1/p).
+        avg_gain = gain.ewm(alpha=1.0 / p, adjust=False, min_periods=p).mean()
+        avg_loss = loss.ewm(alpha=1.0 / p, adjust=False, min_periods=p).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        # Where there were no losses, RSI is defined as 100 (after warmup).
+        rsi = rsi.where(avg_loss != 0, 100.0)
+        cols[f"rsi{p}"] = rsi
+    return pd.DataFrame(cols)
+
+
+def calc_boll(
+    closes: pd.Series, n: int = 20, k: int = 2
+) -> pd.DataFrame:
+    """Bollinger Bands.
+
+    - ``boll_mid``  = SMA(close, n)
+    - ``boll_up``   = mid + k * stdev(close, n)
+    - ``boll_down`` = mid - k * stdev(close, n)
+
+    stdev uses population stddev (ddof=0) to match the common A-share charting
+    convention. Leading ``n - 1`` bars are NaN (rolling warmup).
+
+    Args:
+        closes: closing-price series.
+        n: window (default 20).
+        k: band width in stdevs (default 2).
+    """
+    closes = pd.Series(closes, dtype=float)
+    mid = closes.rolling(window=n, min_periods=n).mean()
+    std = closes.rolling(window=n, min_periods=n).std(ddof=0)
+    up = mid + k * std
+    down = mid - k * std
+    return pd.DataFrame({"boll_mid": mid, "boll_up": up, "boll_down": down})

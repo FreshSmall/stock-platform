@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.schemas.stock import KLineItem, StockBrief, StockInfo
-from app.services import indicator_service, market_service
+from app.services import chip_service, indicator_service, market_data_service, market_service
 
 router = APIRouter(prefix="/stock", tags=["stock"])
 
@@ -84,23 +84,34 @@ def get_info(code: str, db: Session = Depends(get_db)) -> dict:
 @router.get("/{code}/kline")
 def get_kline(
     code: str,
+    period: str = Query("d", pattern="^(d|w|m)$"),
     start: date | None = None,
     end: date | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Get daily K-line bars for a stock, optionally bounded by date range."""
-    rows = market_service.get_kline(db, code, start, end)
+    """Get K-line bars for a stock, optionally bounded by date range.
+
+    ``period`` selects the bar size: ``d`` (daily, default), ``w`` (weekly) or
+    ``m`` (monthly). Weekly/monthly bars are aggregated from daily bars by the
+    service layer.
+    """
+    rows = market_service.get_kline(db, code, start, end, period=period)
+    # Daily rows are ORM objects; weekly/monthly are plain dicts. Normalize to
+    # the KLineItem schema via attribute/dict access.
+    def _get(r, k):
+        return r[k] if isinstance(r, dict) else getattr(r, k)
+
     items = [
         KLineItem(
-            trade_date=r.trade_date,
-            open=r.open,
-            close=r.close,
-            high=r.high,
-            low=r.low,
-            volume=r.volume,
-            amount=r.amount,
-            pct_change=r.pct_change,
-            turnover=r.turnover,
+            trade_date=_get(r, "trade_date"),
+            open=_get(r, "open"),
+            close=_get(r, "close"),
+            high=_get(r, "high"),
+            low=_get(r, "low"),
+            volume=_get(r, "volume"),
+            amount=_get(r, "amount"),
+            pct_change=_get(r, "pct_change"),
+            turnover=_get(r, "turnover"),
         )
         for r in rows
     ]
@@ -110,18 +121,19 @@ def get_kline(
 @router.get("/{code}/indicators")
 def get_indicators(
     code: str,
-    type: str = Query(..., pattern="^(ma|macd|kdj)$"),
+    type: str = Query(..., pattern="^(ma|ema|macd|kdj|rsi|boll)$"),
     start: date | None = None,
     end: date | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     """Compute a technical indicator series over the K-line window.
 
-    ``type`` selects the indicator: ``ma`` (5/10/20), ``macd`` (12/26/9) or
-    ``kdj`` (9). The K-line rows come from :func:`market_service.get_kline`;
-    only bars whose close (and, for KDJ, high/low) are non-null participate,
-    and indicator values are emitted NaN-as-null so the front end can skip
-    warmup bars without special handling.
+    ``type`` selects the indicator: ``ma`` (5/10/20), ``ema`` (12/26),
+    ``macd`` (12/26/9), ``kdj`` (9), ``rsi`` (6/12/24) or ``boll`` (20,2).
+    The K-line rows come from :func:`market_service.get_kline`; only bars whose
+    close (and, for KDJ, high/low) are non-null participate, and indicator
+    values are emitted NaN-as-null so the front end can skip warmup bars without
+    special handling.
     """
     rows = market_service.get_kline(db, code, start, end)
     if not rows:
@@ -132,8 +144,16 @@ def get_indicators(
 
     if type == "ma":
         df = indicator_service.calc_ma(closes)
+    elif type == "ema":
+        df = pd.DataFrame(
+            {f"ema{p}": indicator_service.calc_ema(closes, p) for p in (12, 26)}
+        )
     elif type == "macd":
         df = indicator_service.calc_macd(closes)
+    elif type == "rsi":
+        df = indicator_service.calc_rsi(closes)
+    elif type == "boll":
+        df = indicator_service.calc_boll(closes)
     else:  # kdj — high/low required, keep index aligned with closes.
         highs = pd.Series([float(r.high) for r in rows if r.close is not None])
         lows = pd.Series([float(r.low) for r in rows if r.close is not None])
@@ -144,3 +164,30 @@ def get_indicators(
         for d, row in zip(dates, df.to_dict(orient="records"))
     ]
     return _ok(data)
+
+
+@router.get("/{code}/chip-distribution")
+def get_chip_distribution(
+    code: str,
+    trade_date: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Chip-distribution (筹码峰) snapshot for a stock.
+
+    Reads the pre-computed ``chip_distribution`` table (BP-V1.5-007). Returns
+    ``data=None`` when no snapshot exists.
+    """
+    data = chip_service.get_chip(db, code, trade_date)
+    if data is None:
+        return _ok(None, msg="no chip data")
+    return _ok(data)
+
+
+@router.get("/{code}/money-flow-detail")
+def get_money_flow_detail(
+    code: str,
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Four-tier (super/big/medium/small order) net inflow for a stock."""
+    return _ok(market_data_service.get_money_flow_detail(db, code, days))

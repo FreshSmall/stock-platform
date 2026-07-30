@@ -1,22 +1,47 @@
 import { Layout, Menu } from 'antd';
+import {
+  AppstoreOutlined,
+  BarChartOutlined,
+  FireOutlined,
+  SettingOutlined,
+  StockOutlined,
+} from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import StockSearch from '../StockSearch';
 import RiskNotice from '../RiskNotice';
 import { useAuthStore } from '../../store/authStore';
 
 const { Header, Sider, Content, Footer } = Layout;
 
-const NAV = [
-  { key: '/market', label: '行情' },
+type NavItem = { key: string; label: string; icon?: ReactNode };
+
+// Base nav (visible to everyone) + admin-only nav appended at render time.
+const NAV: NavItem[] = [
+  { key: '/market', label: '行情', icon: <BarChartOutlined /> },
+  { key: '/stocks', label: '股票', icon: <StockOutlined /> },
+  { key: '/sector', label: '板块', icon: <AppstoreOutlined /> },
+  { key: '/dragon-tiger', label: '龙虎榜', icon: <FireOutlined /> },
   { key: '/strategy', label: '策略' },
   { key: '/backtest', label: '回测' },
   { key: '/assistant', label: '助手' },
 ];
 
+const ADMIN_NAV: NavItem = { key: '/admin', label: '管理', icon: <SettingOutlined /> };
+
 export default function AppLayout() {
   const nav = useNavigate();
   const loc = useLocation();
-  const { username, logout } = useAuthStore();
+  const { username, logout, role } = useAuthStore();
+
+  const items = role === 'admin' ? [...NAV, ADMIN_NAV] : NAV;
+
+  // Highlight the active nav even on detail routes (/stock/:code, /sector/:code).
+  const selectedKey =
+    items
+      .map((i) => i.key)
+      .filter((k) => loc.pathname === k || loc.pathname.startsWith(`${k}/`))
+      .sort((a, b) => b.length - a.length)[0] ?? loc.pathname;
 
   return (
     <Layout style={{ height: '100vh' }}>
@@ -62,8 +87,8 @@ export default function AppLayout() {
           <Menu
             theme="dark"
             mode="inline"
-            selectedKeys={[loc.pathname]}
-            items={NAV}
+            selectedKeys={[selectedKey]}
+            items={items}
             onClick={({ key }) => nav(key)}
           />
         </Sider>

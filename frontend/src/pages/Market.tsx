@@ -1,12 +1,26 @@
 import { useState } from 'react';
-import { Card, Col, Row, Segmented, Skeleton, Table, Tag, Typography } from 'antd';
+import { Button, Card, Col, Row, Segmented, Skeleton, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getHotStocks, getIndices, getMarketSummary } from '../api/market';
-import type { HotStock, IndexQuote, MarketSummary } from '../api/types';
+import {
+  fetchNorthFlow,
+  fetchSentiment,
+  getHotStocks,
+  getIndices,
+  getMarketSummary,
+} from '../api/market';
+import type {
+  HotStock,
+  IndexQuote,
+  MarketSummary,
+  NorthFlowRow,
+  Sentiment,
+} from '../api/types';
 import { colorForChange, fmtMoney, fmtPct, fmtPrice } from '../utils/format';
 import EmptyState from '../components/EmptyState';
+import SentimentCards from '../components/SentimentCards';
+import NorthFlowCard from '../components/NorthFlowCard';
 
 const { Title, Text } = Typography;
 
@@ -35,6 +49,18 @@ export default function Market() {
     refetchInterval: REFETCH_MS,
   });
 
+  // V1.5 — market sentiment + northbound flow.
+  const sentimentQ = useQuery<Sentiment>({
+    queryKey: ['market', 'sentiment'],
+    queryFn: fetchSentiment,
+    refetchInterval: REFETCH_MS,
+  });
+  const northQ = useQuery<NorthFlowRow[]>({
+    queryKey: ['market', 'north-flow'],
+    queryFn: () => fetchNorthFlow(30),
+    refetchInterval: REFETCH_MS,
+  });
+
   return (
     <Row gutter={[16, 16]}>
       <Col span={24}>
@@ -49,6 +75,30 @@ export default function Market() {
 
       <Col span={24}>
         <SummaryCard loading={summaryQ.isLoading} summary={summaryQ.data} />
+      </Col>
+
+      <Col span={24}>
+        <SentimentCards sentiment={sentimentQ.data} loading={sentimentQ.isLoading} />
+      </Col>
+
+      <Col xs={24} lg={12}>
+        <NorthFlowCard rows={northQ.data} loading={northQ.isLoading} />
+      </Col>
+      <Col xs={24} lg={12}>
+        <Card
+          title="龙虎榜"
+          extra={
+            <Button size="small" type="link" onClick={() => nav('/dragon-tiger')}>
+              查看全部
+            </Button>
+          }
+        >
+          <div style={{ textAlign: 'center', padding: 24 }}>
+            <Button type="primary" onClick={() => nav('/dragon-tiger')}>
+              进入龙虎榜
+            </Button>
+          </div>
+        </Card>
       </Col>
 
       <Col span={24}>

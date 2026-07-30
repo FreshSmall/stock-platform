@@ -164,3 +164,68 @@ def test_crosses_never_overlap() -> None:
     gc = indicator_service.golden_cross(fast, slow)
     dc = indicator_service.death_cross(fast, slow)
     assert not (gc & dc).any()
+
+
+# --------------------------------------------------------------------------
+# V1.5: RSI, BOLL
+# --------------------------------------------------------------------------
+
+
+def test_calc_rsi_all_up_is_high() -> None:
+    """A strictly rising series has no losses -> RSI -> 100 after warmup."""
+    closes = pd.Series([float(i) for i in range(1, 30)])
+    df = indicator_service.calc_rsi(closes, periods=[6])
+    # after warmup (>= index 6), RSI should be 100 (no losses)
+    assert df["rsi6"].iloc[-1] == pytest.approx(100.0)
+    # leading warmup bars are NaN
+    assert pd.isna(df["rsi6"].iloc[0])
+
+
+def test_calc_rsi_all_down_is_low() -> None:
+    """A strictly falling series -> RSI -> 0 after warmup."""
+    closes = pd.Series([float(i) for i in range(30, 1, -1)])
+    df = indicator_service.calc_rsi(closes, periods=[12])
+    assert df["rsi12"].iloc[-1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_calc_rsi_default_periods() -> None:
+    closes = pd.Series([float(i) for i in range(1, 50)])
+    df = indicator_service.calc_rsi(closes)
+    assert list(df.columns) == ["rsi6", "rsi12", "rsi24"]
+    assert 0.0 <= df["rsi6"].iloc[-1] <= 100.0
+
+
+def test_calc_rsi_in_range() -> None:
+    """RSI always lies in [0, 100] on any series."""
+    rng = np.random.default_rng(7)
+    closes = pd.Series(100 + rng.uniform(-5, 5, 100).cumsum())
+    df = indicator_service.calc_rsi(closes, periods=[14])
+    vals = df["rsi14"].dropna()
+    assert (vals >= 0).all() and (vals <= 100).all()
+
+
+def test_calc_boll_basic() -> None:
+    """mid = SMA(20); up/down = mid ± 2*std; warmup of 19 NaN."""
+    closes = pd.Series([float(i) for i in range(1, 41)])
+    df = indicator_service.calc_boll(closes, n=20, k=2)
+    assert list(df.columns) == ["boll_mid", "boll_up", "boll_down"]
+    # warmup
+    assert pd.isna(df["boll_mid"].iloc[18])
+    assert not pd.isna(df["boll_mid"].iloc[19])
+    # mid at index 19 == mean(1..20)
+    assert df["boll_mid"].iloc[19] == pytest.approx(10.5)
+    # up >= mid >= down
+    last = 39
+    assert df["boll_up"].iloc[last] >= df["boll_mid"].iloc[last]
+    assert df["boll_mid"].iloc[last] >= df["boll_down"].iloc[last]
+
+
+def test_calc_boll_up_down_symmetric() -> None:
+    """up and down are equidistant from mid by k*std."""
+    rng = np.random.default_rng(1)
+    closes = pd.Series(50 + rng.uniform(-3, 3, 60))
+    df = indicator_service.calc_boll(closes, n=20, k=2)
+    width_up = df["boll_up"] - df["boll_mid"]
+    width_down = df["boll_mid"] - df["boll_down"]
+    valid = width_up.dropna()
+    assert np.allclose(valid.values, width_down.dropna().values)
