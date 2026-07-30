@@ -233,3 +233,36 @@ class SaStockIndustry(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"SaStockIndustry(id={self.id!r}, stock_code={self.stock_code!r})"
+
+
+class SaIndexQuote(Base):
+    """Daily quote for a market index (上证/深证/创业板指).
+
+    Maps the ``sa_index_quote`` table. ``index_code`` carries the exchange
+    prefix (e.g. ``sh000001``) so it never collides with a stock code in
+    ``daily_prices`` (where ``000001`` is 平安银行, not 上证指数). ``pct_change``
+    is computed at ingest time from consecutive closes.
+    """
+
+    __tablename__ = "sa_index_quote"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    index_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    index_name: Mapped[Optional[str]] = mapped_column(String(50))
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    open: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    close: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    high: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    low: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2))
+    pct_change: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
+
+    __table_args__ = (
+        UniqueConstraint("index_code", "trade_date", name="uk_index_date"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"SaIndexQuote(id={self.id!r}, index_code={self.index_code!r}, "
+            f"trade_date={self.trade_date!r}, close={self.close!r})"
+        )

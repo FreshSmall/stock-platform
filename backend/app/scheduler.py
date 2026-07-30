@@ -98,6 +98,7 @@ def init_scheduler() -> BackgroundScheduler:
     # V1.5 jobs — registered via admin_service so they share the logging path.
     # (task_name, hour, minute)
     _v15_jobs = [
+        ("index_sync", 16, 35),              # indices via Tencent source, stable
         ("sentiment_sync", 16, 45),          # after daily_k_sync
         ("north_flow_sync", 17, 0),
         ("money_flow_detail_sync", 17, 5),

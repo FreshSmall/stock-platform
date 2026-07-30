@@ -199,23 +199,44 @@ def get_kline(
 def get_indices(db: Session) -> list[dict]:
     """Return the latest quote for the 3 major A-share indices.
 
-    A DB probe (Task B3) confirmed that none of the index codes (000001, 399001,
-    399006) live in ``daily_prices`` — the ``000001`` that does appear there is
-    平安银行, not 上证指数. So we emit placeholder rows with ``close=None`` /
-    ``pct_change=None`` rather than returning misleading stock data.
+    Reads the most recent row per index from ``sa_index_quote`` (populated by
+    the index sync task via the Tencent source). ``code`` returned is the raw
+    6-digit code (``000001``) to match the V1 contract — the exchange prefix
+    (``sh``/``sz``) is an internal storage detail.
 
-    TODO(B4): replace this fallback with real quotes pulled from AkShare's
-    index endpoint (e.g. ``ak.stock_zh_index_spot()``) once that ingestion
-    pipeline is wired up. The contract (list of 3 dicts with code/name/close/
-    pct_change) will stay the same so the router/tests need no changes.
+    When no index data has been ingested yet, falls back to placeholder rows
+    with ``close=None``/``pct_change=None`` so the overview still renders.
 
     Returns:
         A list of 3 dicts, one per index, in the order 上证/深证/创业板.
     """
-    return [
-        {"code": code, "name": name, "close": None, "pct_change": None}
-        for code, name in MAJOR_INDICES
-    ]
+    from app.models.market_data import SaIndexQuote
+
+    out: list[dict] = []
+    for code, name in MAJOR_INDICES:
+        # Try both sh/sz prefixes to find the stored row.
+        row = None
+        for prefix in ("sh", "sz"):
+            row = db.execute(
+                select(SaIndexQuote)
+                .where(SaIndexQuote.index_code == f"{prefix}{code}")
+                .order_by(SaIndexQuote.trade_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if row is not None:
+                break
+        if row is None:
+            out.append({"code": code, "name": name, "close": None, "pct_change": None})
+        else:
+            out.append(
+                {
+                    "code": code,
+                    "name": row.index_name or name,
+                    "close": float(row.close) if row.close is not None else None,
+                    "pct_change": float(row.pct_change) if row.pct_change is not None else None,
+                }
+            )
+    return out
 
 
 def _latest_trade_date(db: Session) -> date | None:

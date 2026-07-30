@@ -401,6 +401,54 @@ def fetch_sector_list(sector_type: str = "industry") -> list[dict]:
     return out
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
+    """Fetch daily index history via the Tencent source (避开 push2 反爬).
+
+    :param symbol: exchange-prefixed code, e.g. ``'sh000001'`` (上证指数),
+        ``'sz399001'`` (深证成指), ``'sz399006'`` (创业板指).
+    :param index_name: display name stored alongside.
+    :return: list of dicts (index_code, index_name, trade_date, open, close,
+        high, low, amount, pct_change). ``pct_change`` is computed here from
+        consecutive closes. Ordered ascending by date.
+
+    Source: ``ak.stock_zh_index_daily_tx(symbol)`` — the Tencent endpoint,
+    which is stable where the eastmoney ``push2*`` endpoints are not. Verified
+    columns (akshare 1.18.80, live): ``date, open, close, high, low, amount``.
+    """
+    _throttle()
+    df = _with_timeout(ak.stock_zh_index_daily_tx, symbol=symbol)
+    if df is None or df.empty:
+        return []
+    df = df.sort_values("date").reset_index(drop=True)
+    out: list[dict] = []
+    prev_close: float | None = None
+    for _, row in df.iterrows():
+        close = _to_float(row.get("close"))
+        pct = None
+        if prev_close and close:
+            pct = round((close - prev_close) / prev_close * 100, 4)
+        out.append(
+            {
+                "index_code": symbol,
+                "index_name": index_name,
+                "trade_date": _to_date_str(row.get("date"), None),
+                "open": _to_float(row.get("open")),
+                "close": close,
+                "high": _to_float(row.get("high")),
+                "low": _to_float(row.get("low")),
+                "amount": _to_float(row.get("amount")),
+                "pct_change": pct,
+            }
+        )
+        prev_close = close
+    return out
+
+
 def _to_float(v: Any) -> float | None:
     try:
         if v is None:

@@ -42,6 +42,7 @@ def _register_runners() -> None:
     from app.data import (
         sync_daily,
         sync_dragon_tiger,
+        sync_index,
         sync_industry,
         sync_minute,
         sync_money_flow_detail,
@@ -57,6 +58,7 @@ def _register_runners() -> None:
     _wrap("north_flow_sync", lambda db: sync_north_flow.sync_all(db))
     _wrap("money_flow_detail_sync", lambda db: sync_money_flow_detail.sync_one_stock(db, "600519"))
     _wrap("sector_sync", lambda db: sync_sector.sync_all(db))
+    _wrap("index_sync", lambda db: sync_index.sync_all(db))
     _wrap("industry_sync", lambda db: sync_industry.sync_one_stock(db, "600519"))
     _wrap("sentiment_sync", lambda db: _sentiment(db))
 
