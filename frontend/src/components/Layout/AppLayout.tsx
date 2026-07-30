@@ -3,8 +3,11 @@ import {
   AppstoreOutlined,
   BarChartOutlined,
   FireOutlined,
+  RobotOutlined,
   SettingOutlined,
   StockOutlined,
+  ThunderboltOutlined,
+  LineChartOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -22,9 +25,9 @@ const NAV: NavItem[] = [
   { key: '/stocks', label: '股票', icon: <StockOutlined /> },
   { key: '/sector', label: '板块', icon: <AppstoreOutlined /> },
   { key: '/dragon-tiger', label: '龙虎榜', icon: <FireOutlined /> },
-  { key: '/strategy', label: '策略' },
-  { key: '/backtest', label: '回测' },
-  { key: '/assistant', label: '助手' },
+  { key: '/strategy', label: '策略', icon: <ThunderboltOutlined /> },
+  { key: '/backtest', label: '回测', icon: <LineChartOutlined /> },
+  { key: '/assistant', label: '助手', icon: <RobotOutlined /> },
 ];
 
 const ADMIN_NAV: NavItem = { key: '/admin', label: '管理', icon: <SettingOutlined /> };

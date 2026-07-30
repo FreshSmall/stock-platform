@@ -21,8 +21,10 @@ def _ok(data=None, msg: str = "ok") -> dict:
 @router.get("")
 def list_stocks(
     industry: str | None = Query(None),
-    tag: str | None = Query(None, pattern="^(limit_up|limit_down|top_gainers)$"),
-    sort: str = Query("pct_change", pattern="^(pct_change|amount|total_mv|pe)$"),
+    tag: str | None = Query(
+        None, pattern="^(limit_up|limit_down|top_gainers|low_price|high_turnover)$"
+    ),
+    sort: str = Query("pct_change", pattern="^(pct_change|amount|total_mv|pe|price|turnover)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),

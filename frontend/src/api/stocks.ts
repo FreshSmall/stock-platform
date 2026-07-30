@@ -12,7 +12,17 @@ export type StockSortKey =
   | 'pct_change'
   | 'amount'
   | 'total_mv'
-  | 'pe';
+  | 'pe'
+  | 'price'
+  | 'turnover';
+
+// Quick-tag preset keys; must match the backend tag enum exactly.
+export type StockTagKey =
+  | 'limit_up'
+  | 'limit_down'
+  | 'top_gainers'
+  | 'low_price'
+  | 'high_turnover';
 
 export interface FetchStocksParams {
   industry?: string;

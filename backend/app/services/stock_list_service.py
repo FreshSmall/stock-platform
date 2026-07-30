@@ -20,6 +20,20 @@ _SORT_COL = {
     "amount": StockPool.total_mv,  # stock_pool has no per-day amount; use mv as proxy
     "total_mv": StockPool.total_mv,
     "pe": StockPool.pe,
+    "price": StockPool.close,
+    "turnover": StockPool.turnover,
+}
+
+# Quick-tag presets: each applies a filter AND forces a sort so the shortcut
+# behaves intuitively (e.g. "低价" = low price ascending, "高换手" = high
+# turnover descending). Maps tag -> (filter predicate builder, sort key, order).
+# NOTE: limit thresholds use the main-board ±10% rule as a screening proxy.
+_TAG_PRESETS = {
+    "limit_up": (lambda q: q.where(StockPool.pct_change >= 9.5), "pct_change", "desc"),
+    "limit_down": (lambda q: q.where(StockPool.pct_change <= -9.5), "pct_change", "asc"),
+    "top_gainers": (lambda q: q.where(StockPool.pct_change >= 5.0), "pct_change", "desc"),
+    "low_price": (lambda q: q.where(StockPool.close.is_not(None)), "price", "asc"),
+    "high_turnover": (lambda q: q.where(StockPool.turnover.is_not(None)), "turnover", "desc"),
 }
 
 
@@ -60,12 +74,15 @@ def list_stocks(
     base = select(StockPool).where(StockPool.trade_date == latest)
     if industry:
         base = base.where(StockPool.industry == industry)
-    if tag == "limit_up":
-        base = base.where(StockPool.pct_change >= 9.5)
-    elif tag == "limit_down":
-        base = base.where(StockPool.pct_change <= -9.5)
-    elif tag == "top_gainers":
-        base = base.where(StockPool.pct_change >= 5.0)
+
+    # A quick-tag preset applies its own filter and OVERRIDES the sort/order so
+    # the shortcut is self-contained (e.g. 低价 always sorts price asc).
+    preset = _TAG_PRESETS.get(tag) if tag else None
+    if preset is not None:
+        filter_fn, preset_sort, preset_order = preset
+        base = filter_fn(base)
+        sort = preset_sort
+        order = preset_order
 
     # total count
     total = db.execute(

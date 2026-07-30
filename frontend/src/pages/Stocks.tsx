@@ -16,7 +16,7 @@ import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { fetchIndustries, fetchStocks } from '../api/stocks';
-import type { StockSortKey } from '../api/stocks';
+import type { StockSortKey, StockTagKey } from '../api/stocks';
 import type { Page, StockRow } from '../api/types';
 import { colorForChange, fmtPct, fmtPrice, fmtYi } from '../utils/format';
 import EmptyState from '../components/EmptyState';
@@ -31,8 +31,13 @@ const SORT_OPTIONS: { label: string; value: StockSortKey }[] = [
   { label: '市盈率', value: 'pe' },
 ];
 
-// Quick tag filters map to common screen shortcuts.
-const QUICK_TAGS = ['涨停', '领涨', '低价', '高换手'] as const;
+// Quick tag filters: key is the backend tag enum, label is the display text.
+const QUICK_TAGS: { label: string; value: StockTagKey }[] = [
+  { label: '涨停', value: 'limit_up' },
+  { label: '领涨', value: 'top_gainers' },
+  { label: '低价', value: 'low_price' },
+  { label: '高换手', value: 'high_turnover' },
+];
 
 // H-stage — 全市场股票列表.
 export default function Stocks() {
@@ -40,7 +45,7 @@ export default function Stocks() {
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(DEFAULT_SIZE);
   const [industry, setIndustry] = useState<string>();
-  const [tag, setTag] = useState<string>();
+  const [tag, setTag] = useState<StockTagKey>();
   const [sort, setSort] = useState<StockSortKey>('amount');
   const [order, setOrder] = useState<'asc' | 'desc'>('desc');
 
@@ -172,10 +177,11 @@ export default function Stocks() {
                 size="small"
                 value={tag}
                 onChange={(v) => {
-                  setTag(v === tag ? undefined : (v as string));
+                  const next = v as StockTagKey;
+                  setTag(next === tag ? undefined : next);
                   setPage(1);
                 }}
-                options={QUICK_TAGS.map((t) => ({ label: t, value: t }))}
+                options={QUICK_TAGS}
               />
               <Segmented
                 size="small"

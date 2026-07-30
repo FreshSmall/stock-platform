@@ -34,9 +34,17 @@ def list_sectors(
 
     :param sort: one of pct_change / amount / main_net_inflow / limit_up_count.
     :return: list of dicts.
+
+    When ``sa_sector_daily`` has no ingested data (e.g. the push2 sector
+    endpoint is unreachable), fall back to aggregating ``stock_pool`` by
+    industry for ``sector_type='industry'`` — so the page is never blank.
+    Concept sectors have no fallback (stock_pool has no concept tag).
     """
     latest = _latest_sector_date(db, sector_type)
     if latest is None:
+        # Fallback: aggregate stock_pool by industry (industry type only).
+        if sector_type == "industry":
+            return _list_sectors_from_pool(db, sort, limit)
         return []
     sort_col = {
         "amount": SaSectorDaily.amount,
@@ -66,6 +74,59 @@ def list_sectors(
             "leader_code": d.leader_code,
         }
         for d, name in rows
+    ]
+
+
+def _list_sectors_from_pool(db: Session, sort: str, limit: int) -> list[dict]:
+    """Fallback sector ranking: aggregate the latest stock_pool by industry.
+
+    Computes per-industry avg pct_change, sum amount, member count and a
+    limit-up proxy (pct_change >= 9.5). ``sector_code`` is the industry name
+    itself (URL-safe enough for the detail route, which tolerates unknown
+    codes by returning an empty member list).
+    """
+    from sqlalchemy import case, func as _f
+
+    from app.models.stock import StockPool
+
+    latest = db.execute(select(_f.max(StockPool.trade_date))).scalar()
+    if latest is None:
+        return []
+    avg_pct = _f.avg(StockPool.pct_change)
+    sum_mv = _f.sum(StockPool.total_mv)
+    cnt = _f.count(StockPool.stock_code)
+    lim_up = _f.sum(case((StockPool.pct_change >= 9.5, 1), else_=0))
+    order_expr = {
+        "amount": sum_mv,
+        "limit_up_count": lim_up,
+        "main_net_inflow": sum_mv,  # no inflow in pool; proxy by mv
+    }.get(sort, avg_pct)
+    rows = db.execute(
+        select(
+            StockPool.industry.label("name"),
+            avg_pct.label("pct"),
+            sum_mv.label("mv"),
+            cnt.label("cnt"),
+            lim_up.label("lim"),
+        )
+        .where(StockPool.trade_date == latest, StockPool.industry.is_not(None))
+        .group_by(StockPool.industry)
+        .order_by(desc(order_expr))
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "sector_code": name,
+            "sector_name": name,
+            "trade_date": latest,
+            "pct_change": round(float(pct), 2) if pct is not None else None,
+            "amount": float(mv) if mv is not None else None,
+            "limit_up_count": int(lim) if lim is not None else 0,
+            "main_net_inflow": None,
+            "leader_code": None,
+            "member_count": int(cnt),
+        }
+        for name, pct, mv, cnt, lim in rows
     ]
 
 
