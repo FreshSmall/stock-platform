@@ -260,8 +260,8 @@ def fetch_north_flow() -> list[dict]:
         buy_amount, sell_amount``. ``channel`` is ``sh`` (沪股通) or ``sz``
         (深股通). Most recent day last.
 
-    Source: ``ak.stock_hsgt_hist_em(symbol='沪股通'/'深股通')``. Columns
-    (akshare 1.18.80): ``日期, 成交净买额, 买入成交额, 卖出成交额``.
+    Source: ``ak.stock_hsgt_hist_em(symbol='沪股通'/'深股通')``. Verified columns
+    (akshare 1.18.80, live): ``日期, 当日成交净买额, 买入成交额, 卖出成交额``.
     """
     out: list[dict] = []
     for cn, channel in (("沪股通", "sh"), ("深股通", "sz")):
@@ -274,7 +274,7 @@ def fetch_north_flow() -> list[dict]:
                 {
                     "trade_date": _to_date_str(row.get("日期"), None),
                     "channel": channel,
-                    "net_buy": _to_float(row.get("成交净买额")),
+                    "net_buy": _to_float(row.get("当日成交净买额")),
                     "buy_amount": _to_float(row.get("买入成交额")),
                     "sell_amount": _to_float(row.get("卖出成交额")),
                 }
@@ -356,7 +356,12 @@ def _to_float(v: Any) -> float | None:
     try:
         if v is None:
             return None
-        return float(v)
+        f = float(v)
+        # akshare returns pandas NaN for missing cells; float('nan') parses
+        # fine but is meaningless downstream, so normalise to None.
+        import math
+
+        return None if math.isnan(f) else f
     except (TypeError, ValueError):
         return None
 
