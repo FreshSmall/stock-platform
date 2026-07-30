@@ -4,23 +4,27 @@ import { useRef } from 'react';
 import type { IndicatorMap, KLineItem } from '../api/types';
 import { UP_COLOR, DOWN_COLOR } from '../utils/format';
 
-// K-line technical chart (H2).
+// K-line technical chart (H2, extended in V1.5 Stage H).
 //
 // Three vertically-stacked, x-axis-shared grids:
-//   1. Main: candlestick + MA5/MA10/MA20 overlays.
+//   1. Main: candlestick + MA5/MA10/MA20 overlays (+ EMA/BOLL overlays when
+//      those indicator tabs are active).
 //   2. Volume bars, red/green by the day's direction.
 //   3. Technical sub-chart driven by `activeIndicator`: MACD (dif/dea/macd
-//      histogram) or KDJ (k/d/j lines).
+//      histogram), KDJ (k/d/j), RSI (rsi6/12/24). EMA and BOLL are overlays on
+//      the main grid, so when they are active the sub-chart is hidden.
 //
 // `indicators.ma` is optional — when absent we still render candle+volume.
-// `indicators.macd` / `indicators.kdj` feed grid 3.
+// `indicators.macd` / `indicators.kdj` / `indicators.rsi` feed grid 3.
 
 const PCT_ZOOM_START = 70; // show the most recent ~30% of bars initially.
+
+export type IndicatorKey = 'macd' | 'kdj' | 'ema' | 'rsi' | 'boll';
 
 type Props = {
   kline: KLineItem[];
   indicators: IndicatorMap;
-  activeIndicator: 'macd' | 'kdj';
+  activeIndicator: IndicatorKey;
 };
 
 export default function KLineChart({ kline, indicators, activeIndicator }: Props) {
@@ -55,16 +59,22 @@ export default function KLineChart({ kline, indicators, activeIndicator }: Props
     lineSeries('MA20', ma20, '#722ed1'),
   ];
 
-  // Sub-chart series depend on the active indicator.
+  // Overlay series (EMA / BOLL) sit on the main grid alongside MA. These only
+  // exist when their indicator tab is active.
+  const overlays = buildOverlaySeries(activeIndicator, dates, indicators);
+
+  // Sub-chart series depend on the active indicator. EMA/BOLL are overlay-only,
+  // so they contribute no sub-chart series and we collapse grid 3 for them.
   const sub = buildSubSeries(activeIndicator, dates, indicators);
   const subYRange = sub.yRange;
+  const hasSub = sub.series.length > 0;
 
   const option: Record<string, unknown> = {
     animation: false,
     backgroundColor: '#fff',
     legend: {
       top: 0,
-      data: ['MA5', 'MA10', 'MA20', ...sub.legendNames],
+      data: ['MA5', 'MA10', 'MA20', ...overlays.legendNames, ...sub.legendNames],
       textStyle: { fontSize: 11 },
     },
     tooltip: {
@@ -97,15 +107,21 @@ export default function KLineChart({ kline, indicators, activeIndicator }: Props
       },
     },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
-    grid: [
-      { left: 56, right: 16, top: 32, height: '52%' }, // main
-      { left: 56, right: 16, top: '64%', height: '12%' }, // volume
-      { left: 56, right: 16, top: '79%', height: '16%' }, // sub
-    ],
+    grid: hasSub
+      ? [
+          { left: 56, right: 16, top: 32, height: '52%' }, // main
+          { left: 56, right: 16, top: '64%', height: '12%' }, // volume
+          { left: 56, right: 16, top: '79%', height: '16%' }, // sub
+        ]
+      : [
+          { left: 56, right: 16, top: 32, height: '64%' }, // main (taller)
+          { left: 56, right: 16, top: '70%', height: '16%' }, // volume
+          { left: 56, right: 16, top: '90%', height: '0%' }, // sub hidden
+        ],
     xAxis: [
       candleXAxis(dates),
       { ...candleXAxis(dates), gridIndex: 1, axisLabel: { show: false } },
-      { ...candleXAxis(dates), gridIndex: 2 },
+      { ...candleXAxis(dates), gridIndex: 2, axisLabel: { show: false } },
     ],
     yAxis: [
       { scale: true, splitLine: { lineStyle: { color: '#f0f0f0' } } },
@@ -137,6 +153,7 @@ export default function KLineChart({ kline, indicators, activeIndicator }: Props
         },
       },
       ...maSeries,
+      ...overlays.series,
       {
         name: '成交量',
         type: 'bar',
@@ -220,8 +237,45 @@ type SubResult = {
   yRange?: [number, number];
 };
 
+// Overlay series (EMA / BOLL) are drawn on the main grid (xAxisIndex 0). They
+// return an empty list when their indicator data is absent or the active tab is
+// not one of theirs.
+function buildOverlaySeries(
+  active: IndicatorKey,
+  dates: string[],
+  indicators: IndicatorMap,
+): SubResult {
+  if (active === 'ema') {
+    const rows = indexByDate(indicators.ema ?? []);
+    const ema12 = dates.map((d) => rows.get(d)?.ema12 ?? '-');
+    const ema26 = dates.map((d) => rows.get(d)?.ema26 ?? '-');
+    return {
+      legendNames: ['EMA12', 'EMA26'],
+      series: [
+        { name: 'EMA12', type: 'line', data: ema12, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { width: 1, color: '#fa541c' } },
+        { name: 'EMA26', type: 'line', data: ema26, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { width: 1, color: '#2f54eb' } },
+      ],
+    };
+  }
+  if (active === 'boll') {
+    const rows = indexByDate(indicators.boll ?? []);
+    const up = dates.map((d) => rows.get(d)?.up ?? '-');
+    const mid = dates.map((d) => rows.get(d)?.mid ?? '-');
+    const low = dates.map((d) => rows.get(d)?.low ?? '-');
+    return {
+      legendNames: ['BOLL上轨', 'BOLL中轨', 'BOLL下轨'],
+      series: [
+        { name: 'BOLL上轨', type: 'line', data: up, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { width: 1, color: '#8c8c8c', type: 'dashed' } },
+        { name: 'BOLL中轨', type: 'line', data: mid, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { width: 1, color: '#1677ff' } },
+        { name: 'BOLL下轨', type: 'line', data: low, xAxisIndex: 0, yAxisIndex: 0, symbol: 'none', lineStyle: { width: 1, color: '#8c8c8c', type: 'dashed' } },
+      ],
+    };
+  }
+  return { legendNames: [], series: [] };
+}
+
 function buildSubSeries(
-  active: 'macd' | 'kdj',
+  active: IndicatorKey,
   dates: string[],
   indicators: IndicatorMap,
 ): SubResult {
@@ -243,19 +297,38 @@ function buildSubSeries(
       ],
     };
   }
-  // KDJ: 0-100+ range (J can overshoot, so leave auto-scale).
-  const rows = indexByDate(indicators.kdj ?? []);
-  const k = dates.map((d) => rows.get(d)?.k ?? '-');
-  const d = dates.map((d) => rows.get(d)?.d ?? '-');
-  const j = dates.map((d) => rows.get(d)?.j ?? '-');
-  return {
-    legendNames: ['K', 'D', 'J'],
-    yRange: [0, 100],
-    series: [
-      { name: 'K', type: 'line', data: k, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#1677ff' } },
-      { name: 'D', type: 'line', data: d, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#fa8c16' } },
-      { name: 'J', type: 'line', data: j, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#722ed1' } },
-    ],
-  };
+  if (active === 'rsi') {
+    const rows = indexByDate(indicators.rsi ?? []);
+    const rsi6 = dates.map((d) => rows.get(d)?.rsi6 ?? '-');
+    const rsi12 = dates.map((d) => rows.get(d)?.rsi12 ?? '-');
+    const rsi24 = dates.map((d) => rows.get(d)?.rsi24 ?? '-');
+    return {
+      legendNames: ['RSI6', 'RSI12', 'RSI24'],
+      yRange: [0, 100],
+      series: [
+        { name: 'RSI6', type: 'line', data: rsi6, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#f5222d' } },
+        { name: 'RSI12', type: 'line', data: rsi12, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#faad14' } },
+        { name: 'RSI24', type: 'line', data: rsi24, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#1677ff' } },
+      ],
+    };
+  }
+  if (active === 'kdj') {
+    // KDJ: 0-100+ range (J can overshoot, so leave auto-scale).
+    const rows = indexByDate(indicators.kdj ?? []);
+    const k = dates.map((d) => rows.get(d)?.k ?? '-');
+    const d = dates.map((d) => rows.get(d)?.d ?? '-');
+    const j = dates.map((d) => rows.get(d)?.j ?? '-');
+    return {
+      legendNames: ['K', 'D', 'J'],
+      yRange: [0, 100],
+      series: [
+        { name: 'K', type: 'line', data: k, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#1677ff' } },
+        { name: 'D', type: 'line', data: d, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#fa8c16' } },
+        { name: 'J', type: 'line', data: j, xAxisIndex: 2, yAxisIndex: 2, symbol: 'none', lineStyle: { width: 1, color: '#722ed1' } },
+      ],
+    };
+  }
+  // ema / boll are overlay-only — no sub-chart series.
+  return { legendNames: [], series: [] };
 }
 

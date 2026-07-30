@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Card, Form, Input, Button, Tabs, message } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { login, register } from '../api/auth';
+import { login, me, register } from '../api/auth';
 import { useAuthStore } from '../store/authStore';
 
 export default function Login() {
   const nav = useNavigate();
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setRole = useAuthStore((s) => s.setRole);
   const [mode, setMode] = useState('login');
   const [loading, setLoading] = useState(false);
 
@@ -16,6 +17,16 @@ export default function Login() {
       if (mode === 'login') {
         const r: any = await login(vals.username, vals.password);
         setAuth(r.token, r.user.username);
+        // Resolve the caller's role (V1.5) so the admin nav gates correctly.
+        // The /me endpoint may not yet return `role` for older backends; in
+        // that case we default to 'user' so a non-admin session is never
+        // accidentally elevated.
+        try {
+          const profile = await me();
+          setRole(profile?.role ?? 'user');
+        } catch {
+          setRole('user');
+        }
         nav('/market');
       } else {
         await register(vals.username, vals.password);

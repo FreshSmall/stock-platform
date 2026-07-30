@@ -29,3 +29,10 @@ export function fmtPrice(v: number | null | undefined): string {
   if (v === null || v === undefined) return '--';
   return Number(v).toFixed(2);
 }
+
+// Format an amount (in 元) as 亿元 with 2 decimals. Used for table cells where
+// the backend returns raw 元 amounts and the UI wants a fixed 亿元 scale.
+export function fmtYi(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '--';
+  return (Number(v) / 1e8).toFixed(2);
+}
