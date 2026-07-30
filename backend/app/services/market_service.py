@@ -219,8 +219,20 @@ def get_indices(db: Session) -> list[dict]:
 
 
 def _latest_trade_date(db: Session) -> date | None:
-    """Return the max ``trade_date`` in ``daily_prices``, or ``None`` if empty."""
-    return db.execute(select(func.max(DailyPrice.trade_date))).scalar()
+    """Return the most recent trade date that has *usable* bars.
+
+    A bare ``max(trade_date)`` picks up the current session even while it is
+    still in progress — those intraday rows have NULL ``pct_change``/``amount``
+    (not yet settled), which makes the overview show all-zero breadth and an
+    empty hot-stock list mid-session. We instead pick the latest date that has
+    at least one row with a non-NULL ``pct_change``, falling back to the plain
+    max only when no date qualifies (e.g. a brand-new DB).
+    """
+    return db.execute(
+        select(func.max(DailyPrice.trade_date)).where(
+            DailyPrice.pct_change.is_not(None)
+        )
+    ).scalar()
 
 
 def get_market_summary(db: Session) -> dict:

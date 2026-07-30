@@ -74,7 +74,14 @@ def _sentiment(db) -> int:
 
     from app.models.stock import DailyPrice
 
-    latest = db.execute(select(_f.max(DailyPrice.trade_date))).scalar()
+    # Pick the latest date with settled bars (non-NULL pct_change); a bare max
+    # would pick the current in-progress session whose rows have NULL pct_change
+    # and yield an all-zero sentiment rollup.
+    latest = db.execute(
+        select(_f.max(DailyPrice.trade_date)).where(
+            DailyPrice.pct_change.is_not(None)
+        )
+    ).scalar()
     if latest is None:
         return 0
     return 1 if sentiment_service.compute_sentiment(db, latest) is not None else 0
