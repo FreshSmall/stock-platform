@@ -26,13 +26,14 @@ _MAX_CODES_PER_RUN = 50
 _LOOKBACK_DAYS = 7
 
 
-def run_daily_sync() -> None:
+def run_daily_sync(max_codes: int | None = None) -> None:
     """Entry point for the daily-K sync job (runs in a background thread).
 
     Pulls the most recent pool snapshot's codes and syncs the last
-    ``_LOOKBACK_DAYS`` calendar days for each (capped at
-    ``_MAX_CODES_PER_RUN`` for MVP safety). A failure on one code logs an
-    error but does not abort the run.
+    ``_LOOKBACK_DAYS`` calendar days for each. ``max_codes`` caps the number of
+    codes per run (default :data:`_MAX_CODES_PER_RUN` for the scheduled MVP
+    run; pass a large number / None for a full-pool back-fill). A failure on
+    one code logs an error but does not abort the run.
     """
     # Local imports keep module import side-effect-free (no DB/session at
     # import time) and avoid a circular ref with app.core.database.
@@ -40,7 +41,8 @@ def run_daily_sync() -> None:
     from app.data import sync_daily
     from app.models.stock import StockPool
 
-    logger.info("daily sync job started")
+    cap = _MAX_CODES_PER_RUN if max_codes is None else max_codes
+    logger.info("daily sync job started (cap=%s)", cap)
     db = SessionLocal()
     try:
         latest_sp = db.execute(
@@ -63,7 +65,7 @@ def run_daily_sync() -> None:
             "%Y%m%d"
         )
         total = 0
-        for code in codes[:_MAX_CODES_PER_RUN]:
+        for code in codes[:cap]:
             try:
                 total += sync_daily.sync_one_stock(db, code, start, end)
             except Exception as e:  # noqa: BLE001 - log and continue per code

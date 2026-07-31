@@ -33,8 +33,21 @@ async def lifespan(app: FastAPI):
 
     The scheduler is created lazily inside :func:`init_scheduler`, so importing
     this module (e.g. in tests) has no background-thread side effects.
+
+    On startup we also kick off a background back-fill: if the host was asleep
+    / off and the scheduled daily-K runs were missed, this catches up
+    ``daily_prices`` so the market overview isn't stuck on a stale date. It
+    runs in a daemon thread (never blocks serving, dies with the process).
     """
+    import threading
+
+    from app.data.backfill import backfill_on_startup
+
     init_scheduler()
+    # Back-fill in the background; daemon so it never blocks shutdown.
+    threading.Thread(
+        target=backfill_on_startup, name="startup-backfill", daemon=True
+    ).start()
     try:
         yield
     finally:
