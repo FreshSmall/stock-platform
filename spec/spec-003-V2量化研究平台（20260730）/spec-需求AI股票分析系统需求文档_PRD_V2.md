@@ -12,7 +12,7 @@
 > V2 继续沿用 V1 的模块化单体 + cachetools + APScheduler + MySQL，仅在必要处引入轻量组件（如 pgvector 向量库复用 MySQL）。
 >
 > 配套文档：
-> - 实现方案：见配套《V2 实现方案》（DDL + API + 任务分解 + 里程碑）
+> - 实现方案：[spec_AI股票分析系统_V2实现方案.md](./spec_AI股票分析系统_V2实现方案.md)（DDL + API + 任务分解 + 里程碑）
 > - 上一版：[spec-需求AI股票分析系统需求文档_PRD_V1.5.md](../spec-002-V1.5增量完善（20260729）/spec-需求AI股票分析系统需求文档_PRD_V1.5.md)
 > - 需求池：[需求池_AI股票分析系统_Backlog.md](../需求池_AI股票分析系统_Backlog.md)（V2 条目 BP-V2-001~014）
 
