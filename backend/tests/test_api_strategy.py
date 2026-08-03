@@ -19,9 +19,15 @@ def test_strategy_list_returns_ma_and_macd_available():
     assert pnames == {"fast", "slow"}
 
 
-def test_strategy_list_has_v2_greyed_out():
+def test_strategy_list_v2_now_available():
+    """V2 strategies (ema/trend/leader/board/lowbuy/breakout) are implemented
+    and available (no longer greyed-out placeholders)."""
     resp = client.get("/api/v1/strategy")
     items = resp.json()["data"]
-    v2 = {it["name"] for it in items if not it["available"]}
-    # V2 placeholders are not usable in V1
-    assert {"ema", "trend", "leader", "board", "lowbuy", "breakout"} <= v2
+    by_name = {it["name"]: it for it in items}
+    for v2_name in ("ema", "trend", "leader", "board", "lowbuy", "breakout"):
+        assert v2_name in by_name, f"{v2_name} missing"
+        assert by_name[v2_name]["available"] is True, f"{v2_name} not available"
+    # all 8 strategies are now usable
+    assert all(it["available"] for it in items)
+    assert len(items) == 8

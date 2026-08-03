@@ -158,13 +158,15 @@ def test_ma_strategy_sells_on_death_cross():
 # --- Registry --------------------------------------------------------------
 
 
-def test_registry_has_ma_and_v2_placeholders():
+def test_registry_has_8_strategies_all_available():
+    """V2: all 8 strategies (ma/macd + 6 new) are registered and available."""
     names = {m.name for m in registry.all_strategies()}
-    assert "ma" in names
-    assert "macd" in names  # added in C2
-    # V2 unavailable placeholders
-    v2 = {m.name for m in registry.all_strategies() if not m.available}
-    assert {"ema", "trend", "leader", "board", "lowbuy", "breakout"} <= v2
+    assert {"ma", "macd", "ema", "trend", "leader", "board", "lowbuy", "breakout"} <= names
+    # V2 strategies now have real cls (no longer None placeholders)
+    for n in ("ema", "trend", "leader", "board", "lowbuy", "breakout"):
+        m = registry.get(n)
+        assert m is not None and m.available and m.cls is not None, f"{n} not ready"
+    assert len(registry.all_strategies()) == 8
 
 
 def test_registry_ma_metadata():
@@ -176,10 +178,12 @@ def test_registry_ma_metadata():
     assert param_names == {"fast", "slow"}
 
 
-def test_available_strategies_excludes_v2():
+def test_available_strategies_includes_v2():
+    """V2: all 8 strategies are available (V1 used to exclude the 6 V2 ones)."""
     avail = {m.name for m in registry.available_strategies()}
     assert "ma" in avail
-    assert "ema" not in avail
+    assert "ema" in avail  # now available in V2
+    assert len(avail) == 8
 
 
 if __name__ == "__main__":
