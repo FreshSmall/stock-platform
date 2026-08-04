@@ -35,16 +35,18 @@ fi
 mkdir -p logs
 
 # ---- 启动后端 ----
+# 必须在 backend/ 下启动：config.py 的 env_file=".env" 是相对 cwd 的路径，
+# pydantic-settings 会从 cwd 找 .env；在项目根跑会找不到 backend/.env。
 echo "▶ 启动后端 (uvicorn, :8000) ..."
 if $DETACHED; then
-    nohup backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
-        > logs/backend.log 2>&1 &
-    echo $! > logs/backend.pid
-    echo "  后端 PID=$(cat logs/backend.pid)，日志 logs/backend.log"
+    (cd backend && nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+        > ../logs/backend.log 2>&1 &)
+    pgrep -f "uvicorn app.main:app" > logs/backend.pid || true
+    echo "  后端已启动，日志 logs/backend.log"
 else
-    backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
-        > logs/backend.log 2>&1 &
-    echo $! > logs/backend.pid
+    (cd backend && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+        > ../logs/backend.log 2>&1 &)
+    pgrep -f "uvicorn app.main:app" > logs/backend.pid || true
 fi
 
 # 等后端起来
