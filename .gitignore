@@ -222,3 +222,6 @@ __marimo__/
 .env.local
 docker-compose.override.yml
 
+
+# 本地启动脚本日志
+logs/
