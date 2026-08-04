@@ -14,6 +14,9 @@ import Analysis from './pages/Analysis';
 import Strategy from './pages/Strategy';
 import Backtest from './pages/Backtest';
 import Assistant from './pages/Assistant';
+import Factor from './pages/Factor';
+import Portfolio from './pages/Portfolio';
+import Reports from './pages/Reports';
 import Login from './pages/Login';
 
 const qc = new QueryClient();
@@ -47,6 +50,9 @@ export default function App() {
             <Route path="/strategy" element={<Strategy />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/assistant" element={<Assistant />} />
+            <Route path="/factor" element={<Factor />} />
+            <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/reports" element={<Reports />} />
             <Route path="/" element={<Navigate to="/market" replace />} />
           </Route>
         </Routes>

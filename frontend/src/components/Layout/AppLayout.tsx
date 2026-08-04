@@ -2,7 +2,10 @@ import { Layout, Menu } from 'antd';
 import {
   AppstoreOutlined,
   BarChartOutlined,
+  ExperimentOutlined,
+  FileTextOutlined,
   FireOutlined,
+  FundOutlined,
   RobotOutlined,
   SettingOutlined,
   StockOutlined,
@@ -25,8 +28,11 @@ const NAV: NavItem[] = [
   { key: '/stocks', label: '股票', icon: <StockOutlined /> },
   { key: '/sector', label: '板块', icon: <AppstoreOutlined /> },
   { key: '/dragon-tiger', label: '龙虎榜', icon: <FireOutlined /> },
+  { key: '/factor', label: '因子', icon: <ExperimentOutlined /> },
   { key: '/strategy', label: '策略', icon: <ThunderboltOutlined /> },
   { key: '/backtest', label: '回测', icon: <LineChartOutlined /> },
+  { key: '/portfolio', label: '组合', icon: <FundOutlined /> },
+  { key: '/reports', label: '报告', icon: <FileTextOutlined /> },
   { key: '/assistant', label: '助手', icon: <RobotOutlined /> },
 ];
 
@@ -86,7 +92,7 @@ export default function AppLayout() {
         </div>
       </Header>
       <Layout style={{ flex: 1, minHeight: 0 }}>
-        <Sider width={120} theme="dark">
+        <Sider width={136} theme="dark">
           <Menu
             theme="dark"
             mode="inline"

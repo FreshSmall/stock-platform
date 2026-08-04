@@ -285,3 +285,135 @@ export interface UserProfile {
   username: string;
   role?: string;
 }
+
+// ---- V2 Stage N3 additions ------------------------------------------------
+
+// Factors (因子). Categories: trend/momentum/volatility/volume/fundamental/sentiment.
+export type FactorCategory =
+  | 'trend'
+  | 'momentum'
+  | 'volatility'
+  | 'volume'
+  | 'fundamental'
+  | 'sentiment';
+
+export interface FactorBrief {
+  code: string;
+  name: string;
+  category: FactorCategory;
+}
+
+// One factor value point for a stock on a trade day.
+export interface FactorSeriesPoint {
+  trade_date: string;
+  value: number | null;
+}
+
+// IC analysis result for a single rebalance date.
+export interface LayeredReturn {
+  layer: number; // 1 = lowest factor value
+  mean_return: number | null;
+  count: number;
+}
+
+export interface FactorIC {
+  factor_code: string;
+  trade_date: string;
+  horizon: number;
+  ic: number | null;
+  win_rate: number | null;
+  layered_returns: LayeredReturn[] | null;
+  universe_size: number;
+}
+
+// Multi-factor score row (ranked).
+export interface FactorScoreRow {
+  stock_code: string;
+  score: number;
+}
+
+// Portfolios (组合).
+export interface PortfolioHolding {
+  stock_code: string;
+  weight: number | null;
+}
+
+export interface Portfolio {
+  id: number;
+  name: string;
+  description?: string | null;
+  benchmark?: string | null;
+  holdings: PortfolioHolding[];
+  created_at?: string | null;
+}
+
+export interface PortfolioNavItem {
+  id: number;
+  name: string;
+  description?: string | null;
+  benchmark?: string | null;
+  holdings_count?: number;
+  return_rate?: number | null;
+}
+
+export interface PortfolioNavPoint {
+  date: string;
+  nav: number;
+}
+
+export interface PortfolioBacktestResult {
+  nav_curve: PortfolioNavPoint[];
+  return_rate?: number | null;
+  max_drawdown?: number | null;
+  holdings?: PortfolioHolding[];
+}
+
+// Agent reports (报告). Agents: sector/market/review/recommend.
+export type ReportAgent = 'sector' | 'market' | 'review' | 'recommend';
+
+export interface AgentReport {
+  id: number;
+  agent: ReportAgent;
+  trade_date: string | null;
+  title: string | null;
+  target: string | null;
+  summary: string | null;
+  content: string | null;
+  scores: Record<string, number> | null;
+  created_at: string | null;
+}
+
+// News (新闻情绪).
+export interface NewsItem {
+  id: number;
+  pub_time: string | null;
+  title: string | null;
+  content: string | null;
+  source: string | null;
+  stock_codes: string[];
+  sector: string | null;
+  sentiment: number | null; // -1 ~ +1
+  summary: string | null;
+}
+
+// Knowledge base (RAG 知识库).
+export interface KnowledgeDoc {
+  id: number;
+  title: string;
+  source: string | null;
+  stock_code: string | null;
+  doc_date: string | null;
+  status: string; // pending | embedded | failed
+  created_at: string | null;
+}
+
+// One retrieved chunk surfaced as a citation in an assistant answer.
+export interface KnowledgeSource {
+  doc_id: number;
+  title: string;
+  source: string | null;
+  stock_code: string | null;
+  text: string;
+  chunk_index: number;
+  score: number;
+}

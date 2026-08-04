@@ -7,6 +7,7 @@ import {
   Empty,
   Input,
   List,
+  Modal,
   Space,
   Spin,
   Tag,
@@ -15,10 +16,14 @@ import {
 import ReactMarkdown from 'react-markdown';
 import {
   createSession,
+  deleteKnowledgeDoc,
   getMessages,
+  listKnowledgeDocs,
   listSessions,
   sendMessageStream,
+  uploadKnowledgeDoc,
 } from '../api/assistant';
+import type { KnowledgeDoc, KnowledgeSource } from '../api/types';
 import RiskNotice from '../components/RiskNotice';
 
 const { TextArea } = Input;
@@ -42,6 +47,8 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
   toolSteps: ToolStep[];
+  // V2: RAG source citations attached to the assistant reply (if any).
+  sources: KnowledgeSource[];
   error?: string;
 }
 
@@ -108,6 +115,7 @@ export default function Assistant() {
             role: r.role,
             content: r.content ?? '',
             toolSteps: [],
+            sources: [],
           }));
         dispatch({ type: 'set', messages: mapped });
       } catch (e) {
@@ -167,11 +175,17 @@ export default function Assistant() {
       const assistantId = nextId();
       dispatch({
         type: 'add',
-        message: { id: userId, role: 'user', content, toolSteps: [] },
+        message: { id: userId, role: 'user', content, toolSteps: [], sources: [] },
       });
       dispatch({
         type: 'add',
-        message: { id: assistantId, role: 'assistant', content: '', toolSteps: [] },
+        message: {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          toolSteps: [],
+          sources: [],
+        },
       });
 
       try {
@@ -183,6 +197,10 @@ export default function Assistant() {
             const { type, data } = evt;
             if (type === 'chunk' && typeof data === 'string') {
               dispatch({ type: 'appendChunk', id: assistantId, chunk: data });
+            } else if (type === 'sources') {
+              // V2 RAG: attach retrieved source citations to the reply.
+              const srcs = Array.isArray(data) ? (data as KnowledgeSource[]) : [];
+              dispatch({ type: 'setSources', id: assistantId, sources: srcs });
             } else if (type === 'tool_call') {
               const d = data as { name?: string; args?: unknown };
               dispatch({
@@ -236,6 +254,9 @@ export default function Assistant() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // V2: knowledge base panel toggle.
+  const [kbOpen, setKbOpen] = useState(false);
 
   return (
     <div
@@ -300,7 +321,16 @@ export default function Assistant() {
         size="small"
         style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' } }}
-        title={<Title level={5} style={{ margin: 0 }}>AI 助手</Title>}
+        title={
+          <Space>
+            <Title level={5} style={{ margin: 0 }}>AI 助手</Title>
+          </Space>
+        }
+        extra={
+          <Button size="small" onClick={() => setKbOpen((v) => !v)}>
+            知识库
+          </Button>
+        }
       >
         {/* Scrollable message area. */}
         <div
@@ -357,7 +387,226 @@ export default function Assistant() {
           </Space.Compact>
         </div>
       </Card>
+
+      {/* V2: RAG knowledge base management panel (toggleable). */}
+      {kbOpen && <KnowledgePanel />}
     </div>
+  );
+}
+
+// V2 — RAG knowledge base panel: list docs, upload new ones, delete.
+function KnowledgePanel() {
+  const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await listKnowledgeDocs();
+      setDocs(list);
+    } catch {
+      // ignore — non-fatal
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const remove = async (id: number) => {
+    try {
+      await deleteKnowledgeDoc(id);
+      setDocs((prev) => prev.filter((d) => d.id !== id));
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <Card
+      size="small"
+      style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
+      styles={{ body: { padding: 0, flex: 1, overflow: 'auto' } }}
+      title="知识库"
+      extra={
+        <Button size="small" type="primary" onClick={() => setUploadOpen(true)}>
+          上传
+        </Button>
+      }
+    >
+      {loading ? (
+        <div style={{ padding: 16, textAlign: 'center' }}>
+          <Spin />
+        </div>
+      ) : docs.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="暂无文档"
+          style={{ padding: 16 }}
+        />
+      ) : (
+        <List
+          size="small"
+          dataSource={docs}
+          renderItem={(d) => (
+            <List.Item
+              style={{ padding: '8px 12px', alignItems: 'flex-start' }}
+              actions={[
+                <a
+                  key="del"
+                  onClick={() => remove(d.id)}
+                  style={{ color: '#ff4d4f', fontSize: 12 }}
+                >
+                  删除
+                </a>,
+              ]}
+            >
+              <List.Item.Meta
+                title={
+                  <Space size={4} wrap>
+                    <Text ellipsis style={{ maxWidth: 140 }}>
+                      {d.title}
+                    </Text>
+                    <Tag
+                      color={
+                        d.status === 'embedded'
+                          ? 'green'
+                          : d.status === 'failed'
+                            ? 'red'
+                            : 'default'
+                      }
+                      style={{ fontSize: 10, margin: 0 }}
+                    >
+                      {d.status}
+                    </Tag>
+                  </Space>
+                }
+                description={
+                  <Space size={4} wrap>
+                    {d.stock_code && <Tag style={{ fontSize: 10 }}>{d.stock_code}</Tag>}
+                    {d.source && (
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        {d.source}
+                      </Text>
+                    )}
+                    {d.doc_date && (
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        {d.doc_date}
+                      </Text>
+                    )}
+                  </Space>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      )}
+
+      <UploadDocModal
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={() => {
+          setUploadOpen(false);
+          refresh();
+        }}
+      />
+    </Card>
+  );
+}
+
+function UploadDocModal({
+  open,
+  onClose,
+  onUploaded,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onUploaded: () => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [source, setSource] = useState('');
+  const [stockCode, setStockCode] = useState('');
+  const [docDate, setDocDate] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setError(null);
+    if (!title.trim() || !content.trim()) {
+      setError('请填写标题与正文');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await uploadKnowledgeDoc({
+        title: title.trim(),
+        content: content.trim(),
+        source: source.trim() || undefined,
+        stock_code: stockCode.trim() || undefined,
+        doc_date: docDate.trim() || undefined,
+      });
+      setTitle('');
+      setContent('');
+      setSource('');
+      setStockCode('');
+      setDocDate('');
+      onUploaded();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '上传失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="上传知识库文档"
+      open={open}
+      onCancel={onClose}
+      onOk={submit}
+      okButtonProps={{ loading: submitting }}
+      destroyOnHidden
+      width={560}
+    >
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Input
+          placeholder="标题"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <TextArea
+          placeholder="正文（支持研报、公告、笔记等任意文本）"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          autoSize={{ minRows: 6, maxRows: 16 }}
+        />
+        <Space wrap>
+          <Input
+            placeholder="来源（可选）"
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            style={{ width: 160 }}
+          />
+          <Input
+            placeholder="股票代码（可选）"
+            value={stockCode}
+            onChange={(e) => setStockCode(e.target.value)}
+            style={{ width: 140 }}
+          />
+          <Input
+            placeholder="日期 YYYY-MM-DD（可选）"
+            value={docDate}
+            onChange={(e) => setDocDate(e.target.value)}
+            style={{ width: 180 }}
+          />
+        </Space>
+        {error && <Alert type="error" showIcon message={error} />}
+      </Space>
+    </Modal>
   );
 }
 
@@ -414,6 +663,9 @@ function MessageBubble({ message, sending }: { message: ChatMessage; sending: bo
             <ToolStepView key={i} step={step} />
           ))}
 
+          {/* V2: RAG source citations render above the streamed text. */}
+          {message.sources.length > 0 && <SourcesView sources={message.sources} />}
+
           {message.content ? (
             <div className="assistant-md">
               <ReactMarkdown>{message.content}</ReactMarkdown>
@@ -448,6 +700,54 @@ function MessageBubble({ message, sending }: { message: ChatMessage; sending: bo
         </>
       )}
     </Card>
+  );
+}
+
+// V2 — render RAG source citations as a collapsible list above the answer.
+function SourcesView({ sources }: { sources: KnowledgeSource[] }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <Collapse
+        size="small"
+        defaultActiveKey={['1']}
+        items={[
+          {
+            key: '1',
+            label: (
+              <Space size={6}>
+                <Tag color="purple" style={{ margin: 0 }}>
+                  来源
+                </Tag>
+                <Text strong>知识库引用 ({sources.length})</Text>
+              </Space>
+            ),
+            children: (
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {sources.map((s, i) => (
+                  <Card
+                    key={i}
+                    size="small"
+                    style={{ background: '#fafaff' }}
+                    title={
+                      <Space size={6}>
+                        <Text strong>{s.title}</Text>
+                        {s.stock_code && <Tag>{s.stock_code}</Tag>}
+                        {s.source && <Tag color="blue">{s.source}</Tag>}
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          相似度 {Number(s.score).toFixed(3)}
+                        </Text>
+                      </Space>
+                    }
+                  >
+                    <Text style={{ whiteSpace: 'pre-wrap' }}>{s.text}</Text>
+                  </Card>
+                ))}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </div>
   );
 }
 
@@ -537,6 +837,7 @@ type Action =
   | { type: 'finalize'; id: string; content: string }
   | { type: 'addToolStep'; id: string; step: ToolStep }
   | { type: 'fillToolResult'; id: string; name?: string; result: unknown }
+  | { type: 'setSources'; id: string; sources: KnowledgeSource[] }
   | { type: 'setError'; id: string; error: string }
   | { type: 'set'; messages: ChatMessage[] }
   | { type: 'reset' };
@@ -547,6 +848,8 @@ function messagesReducer(state: ChatMessage[], action: Action): ChatMessage[] {
       return [...state, action.message];
     case 'appendChunk':
       return patch(state, action.id, (m) => ({ ...m, content: m.content + action.chunk }));
+    case 'setSources':
+      return patch(state, action.id, (m) => ({ ...m, sources: action.sources }));
     case 'finalize':
       // Only backfill if nothing streamed in; never overwrite chunks.
       return patch(state, action.id, (m) =>
