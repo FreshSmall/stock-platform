@@ -79,7 +79,15 @@ class SaBacktestResult(Base):
     max_drawdown: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
     sharpe: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
     win_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
+    # V2 advanced metrics
+    calmar: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    information_ratio: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    profit_loss_ratio: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
     equity_curve: Mapped[Optional[dict]] = mapped_column(JSON)
+    drawdown_curve: Mapped[Optional[dict]] = mapped_column(JSON)
+    position_curve: Mapped[Optional[dict]] = mapped_column(JSON)
+    benchmark_curve: Mapped[Optional[dict]] = mapped_column(JSON)
+    benchmark_return: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
     trades: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

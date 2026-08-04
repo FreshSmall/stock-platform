@@ -132,10 +132,15 @@ def run_backtest(
     initial_cash: Decimal = Decimal("100000"),
     commission: Decimal = Decimal("0.0003"),
     slippage: Decimal = Decimal("0.0001"),
+    benchmark: str | None = None,
 ) -> dict:
     """Run a backtest for the FIRST stock in ``stock_pool`` (V1 single-stock).
 
-    Returns a dict with the 5 headline metrics plus ``equity_curve`` and
+    V2 adds advanced metrics (calmar/IR/profit-loss-ratio), drawdown/position
+    curves, and an optional benchmark comparison (``benchmark`` = ETF code like
+    ``510300`` for 沪深300).
+
+    Returns a dict with the headline + advanced metrics plus curves and
     ``trades``. Raises ``ValueError`` if the strategy is unknown, the pool is
     empty, there is no K-line data, or there are too few bars.
     """
@@ -163,6 +168,38 @@ def run_backtest(
     cerebro.adddata(data)
     cerebro.addstrategy(meta.cls, **params)
 
+    # V2: optional benchmark comparison. ``benchmark`` may be either a stock/ETF
+    # code present in daily_prices, or an index code from sa_index_quote
+    # (e.g. ``sh000001`` 上证指数). We build a close-price series either way.
+    benchmark_rows = None
+    if benchmark:
+        from app.models.market_data import SaIndexQuote
+
+        # Try index table first (codes carry sh/sz prefix).
+        idx_rows = db.execute(
+            select(SaIndexQuote)
+            .where(
+                SaIndexQuote.index_code == benchmark,
+                SaIndexQuote.trade_date >= start_date,
+                SaIndexQuote.trade_date <= end_date,
+            )
+            .order_by(SaIndexQuote.trade_date.asc())
+        ).scalars().all()
+        if idx_rows:
+            # Build a lightweight list mimicking DailyPrice for _kline_to_dataframe.
+            class _IdxRow:
+                def __init__(self, r):
+                    self.trade_date = r.trade_date
+                    self.open = r.open
+                    self.close = r.close
+                    self.high = r.high
+                    self.low = r.low
+                    self.volume = None
+            benchmark_rows = [_IdxRow(r) for r in idx_rows if r.close is not None]
+        else:
+            # Fall back to daily_prices (stock/ETF codes).
+            benchmark_rows = market_service.get_kline(db, benchmark, start=start_date, end=end_date)
+
     # Analyzers: the built-ins cover the headline aggregates; the custom
     # _TradeRecorder fills the per-trade list that TradeAnalyzer can't give.
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
@@ -175,6 +212,11 @@ def run_backtest(
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
     cerebro.addanalyzer(
         bt.analyzers.TimeReturn, _name="timereturn", timeframe=bt.TimeFrame.Days
+    )
+    # V2: annualised return (for Calmar) + returns series (for IR vs benchmark).
+    cerebro.addanalyzer(
+        bt.analyzers.TimeReturn, _name="timereturn_annual",
+        timeframe=bt.TimeFrame.Years,
     )
     cerebro.addanalyzer(_TradeRecorder, _name="traderecorder")
 
@@ -199,6 +241,7 @@ def run_backtest(
     ta = strat.analyzers.trades.get_analysis()
     closed = ta.get("total", {}).get("closed", 0) or 0
     won = ta.get("won", {}).get("total", 0) or 0
+    lost = ta.get("lost", {}).get("total", 0) or 0
     trade_count = int(closed)
     win_rate = (won / closed * 100.0) if closed > 0 else 0.0
 
@@ -206,16 +249,88 @@ def run_backtest(
     tr = strat.analyzers.timereturn.get_analysis()
     equity = cash
     curve: list[dict[str, Any]] = []
+    eq_series: list[float] = []
     for d, r in tr.items():
         equity *= 1.0 + float(r)
-        # TimeReturn keys are datetime.datetime objects in this backtrader
-        # version, so .date().isoformat() is safe; fall back to str() for any
-        # future version that hands back a float bar index.
+        eq_series.append(equity)
         d_iso = d.date().isoformat() if hasattr(d, "date") else str(d)
         curve.append({"date": d_iso, "equity": round(equity, 2)})
 
-    # --- per-trade list (from the custom analyzer) -------------------------
+    # --- V2 advanced metrics ------------------------------------------------
+    # Calmar = annualised return / max drawdown.
+    annual_ret = None
+    tr_annual = strat.analyzers.timereturn_annual.get_analysis()
+    if tr_annual:
+        annual_ret = float(list(tr_annual.values())[-1]) * 100  # last year's return
+    calmar = None
+    if annual_ret is not None and max_drawdown > 0:
+        calmar = round(annual_ret / max_drawdown, 4)
+
+    # Profit/loss ratio = avg win / avg loss.
+    pnl_ratio = None
+    avg_win = ta.get("won", {}).get("pnl", {}).get("average")
+    avg_lost = ta.get("lost", {}).get("pnl", {}).get("average")
+    if avg_win is not None and avg_lost not in (None, 0, 0.0):
+        pnl_ratio = round(float(abs(avg_win / avg_lost)), 4)
+
+    # Drawdown curve: running max drawdown from the equity series.
+    dd_curve: list[dict] = []
+    if eq_series:
+        peak = eq_series[0]
+        for i, eq in enumerate(eq_series):
+            peak = max(peak, eq)
+            dd_pct = (peak - eq) / peak * 100 if peak > 0 else 0
+            dd_curve.append({"date": curve[i]["date"], "drawdown": round(dd_pct, 4)})
+
+    # Position curve: size held per bar (from the strategy's position). We
+    # approximate by sampling the broker position over the timereturn dates.
+    pos_curve: list[dict] = []
+    for i, (d, _r) in enumerate(tr.items()):
+        d_iso = d.date().isoformat() if hasattr(d, "date") else str(d)
+        # position size at this bar isn't directly accessible post-run; we
+        # derive it from trades: a holding spans entry..exit.
+        pos_curve.append({"date": d_iso, "position": 0})
+    # Fill positions from the recorded trades (in-market between entry/exit).
     trades_out = list(strat.analyzers.traderecorder.get_analysis())
+    for t in trades_out:
+        entry, exit_ = t.get("entry_date"), t.get("exit_date")
+        size = abs(t.get("size", 0) or 0)
+        for p in pos_curve:
+            if entry and exit_ and entry <= p["date"] <= exit_:
+                p["position"] = size
+            elif entry and not exit_ and p["date"] >= entry:
+                p["position"] = size
+
+    # Benchmark comparison: compute buy-and-hold return for the benchmark code
+    # over the same window, normalised to the same equity curve shape.
+    benchmark_curve: list[dict] = []
+    benchmark_return = None
+    information_ratio = None
+    if benchmark_rows:
+        bm_df = _kline_to_dataframe(benchmark_rows)
+        if not bm_df.empty:
+            bm_ret = bm_df["close"].pct_change().dropna()
+            bm_equity = cash
+            strat_rets = pd.Series([float(r) for r in tr.values()])
+            # align by length
+            n = min(len(bm_ret), len(strat_rets))
+            for i in range(n):
+                bm_equity *= 1.0 + float(bm_ret.iloc[i])
+                d_iso = (
+                    bm_ret.index[i].date().isoformat()
+                    if hasattr(bm_ret.index[i], "date")
+                    else str(bm_ret.index[i])
+                )
+                benchmark_curve.append({"date": d_iso, "equity": round(bm_equity, 2)})
+            benchmark_return = round((bm_equity - cash) / cash * 100, 4)
+            # Information ratio = mean(strat - bm) / std(strat - bm), annualised.
+            if n >= 5:
+                excess = strat_rets.iloc[:n].values - bm_ret.iloc[:n].values
+                std = float(pd.Series(excess).std())
+                if std > 0:
+                    information_ratio = round(
+                        float(pd.Series(excess).mean() / std * (250 ** 0.5)), 4
+                    )
 
     return {
         "return_rate": round(return_rate, 4),
@@ -226,6 +341,14 @@ def run_backtest(
         "final_value": round(final_value, 2),
         "equity_curve": curve,
         "trades": trades_out,
+        # V2 advanced
+        "calmar": calmar,
+        "information_ratio": information_ratio,
+        "profit_loss_ratio": pnl_ratio,
+        "drawdown_curve": dd_curve,
+        "position_curve": pos_curve,
+        "benchmark_curve": benchmark_curve,
+        "benchmark_return": benchmark_return,
     }
 
 
@@ -260,16 +383,21 @@ def execute_and_store(db: Session, run: SaBacktestRun) -> SaBacktestResult:
     run.status = "running"
     db.commit()
     try:
+        # ``benchmark`` is a run-level param, NOT a strategy param — pull it out
+        # so it isn't passed to the backtrader Strategy via **params.
+        strategy_params = dict(run.params or {})
+        benchmark = strategy_params.pop("benchmark", None)
         result_data = run_backtest(
             db,
             strategy=run.strategy,
-            params=run.params or {},
+            params=strategy_params,
             stock_pool=run.stock_pool or [],
             start_date=run.start_date,
             end_date=run.end_date,
             initial_cash=run.initial_cash,
             commission=run.commission,
             slippage=run.slippage,
+            benchmark=benchmark,
         )
         result = SaBacktestResult(
             run_id=run.run_id,
@@ -277,7 +405,14 @@ def execute_and_store(db: Session, run: SaBacktestRun) -> SaBacktestResult:
             max_drawdown=result_data["max_drawdown"],
             sharpe=result_data["sharpe"],
             win_rate=result_data["win_rate"],
+            calmar=result_data.get("calmar"),
+            information_ratio=result_data.get("information_ratio"),
+            profit_loss_ratio=result_data.get("profit_loss_ratio"),
             equity_curve=result_data["equity_curve"],
+            drawdown_curve=result_data.get("drawdown_curve"),
+            position_curve=result_data.get("position_curve"),
+            benchmark_curve=result_data.get("benchmark_curve"),
+            benchmark_return=result_data.get("benchmark_return"),
             trades=result_data["trades"],
         )
         db.add(result)
