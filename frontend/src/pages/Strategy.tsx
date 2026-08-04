@@ -33,13 +33,12 @@ interface StrategyMeta {
   available: boolean;
 }
 
-// H4 — 策略列表.
+// H4 + V2 — 策略列表.
 //
 // Renders all strategies from the registry as cards in a responsive grid.
-// Available strategies (V1: ma, macd) are fully interactive — clicking
+// V2 makes all 8 strategies available (V1 ma/macd + V2 ema/trend/leader/board/
+// lowbuy/breakout). Each card shows the strategy's params; clicking
 // 「回测此策略」 carries the strategy key into /backtest?strategy=<name>.
-// Unavailable V2 placeholders render greyed-out with a 「V2 上线」 tag and a
-// disabled button.
 export default function Strategy() {
   const nav = useNavigate();
   const q = useQuery<StrategyMeta[]>({
@@ -105,14 +104,17 @@ function StrategyCard({
   onBacktest: () => void;
 }) {
   const params = meta.params ?? [];
+  // V2: all registered strategies are interactive. We keep the `available`
+  // flag for display (a "可用" tag) but no longer gate the backtest button.
+  const available = meta.available;
   return (
     <Card
       styles={{ body: { display: 'flex', flexDirection: 'column', padding: 20 } }}
-      style={{ width: '100%', opacity: meta.available ? 1 : 0.6 }}
+      style={{ width: '100%' }}
       title={
         <Space size={8} align="center">
           <span>{meta.title}</span>
-          {!meta.available && <Tag color="default">V2 上线</Tag>}
+          <Tag color={available ? 'green' : 'blue'}>{available ? 'V1' : 'V2'}</Tag>
         </Space>
       }
       extra={<Tag>{meta.name}</Tag>}
@@ -138,12 +140,7 @@ function StrategyCard({
         )}
       </div>
 
-      <Button
-        type="primary"
-        block
-        disabled={!meta.available}
-        onClick={onBacktest}
-      >
+      <Button type="primary" block onClick={onBacktest}>
         回测此策略
       </Button>
     </Card>

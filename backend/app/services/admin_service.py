@@ -61,6 +61,17 @@ def _register_runners() -> None:
     _wrap("index_sync", lambda db: sync_index.sync_all(db))
     _wrap("industry_sync", lambda db: sync_industry.sync_one_stock(db, "600519"))
     _wrap("sentiment_sync", lambda db: _sentiment(db))
+    # V2 agents (BP-V2-009~012): daily report generation
+    _wrap("market_agent_sync", lambda db: _run_agent(db, "market"))
+    _wrap("review_agent_sync", lambda db: _run_agent(db, "review"))
+
+
+def _run_agent(db, agent_name: str) -> int:
+    """Run a V2 agent; returns 1 on success (agent_service.generate persists)."""
+    from app.services import agent_service
+
+    agent_service.generate(db, agent_name, target=None)
+    return 1
 
 
 def _daily_k(db) -> int:

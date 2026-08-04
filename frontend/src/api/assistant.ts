@@ -1,5 +1,6 @@
 import client from './client';
 import { streamSSE } from '../utils/sse';
+import type { KnowledgeDoc } from './types';
 
 export const createSession = (title?: string) =>
   client.post('/assistant/sessions', { title }).then((r) => r.data);
@@ -25,3 +26,31 @@ export function sendMessageStream(
     { method: 'POST', body: { content } },
   );
 }
+
+// V2 Stage L — RAG knowledge base. Endpoints under /assistant/knowledge.
+
+export interface UploadDocReq {
+  title: string;
+  content: string;
+  source?: string;
+  stock_code?: string;
+  doc_date?: string; // ISO YYYY-MM-DD
+}
+
+export const uploadKnowledgeDoc = (req: UploadDocReq) =>
+  client
+    .post<{ id: number; title: string; status: string }>('/assistant/knowledge', req)
+    .then((r) => r.data);
+
+export const listKnowledgeDocs = (
+  params: { stock_code?: string; status?: string; limit?: number } = {},
+) =>
+  client
+    .get<KnowledgeDoc[]>('/assistant/knowledge', {
+      params: { limit: 100, ...params },
+    })
+    .then((r) => r.data);
+
+export const deleteKnowledgeDoc = (docId: number) =>
+  client.delete(`/assistant/knowledge/${docId}`).then((r) => r.data);
+

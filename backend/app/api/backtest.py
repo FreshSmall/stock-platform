@@ -78,7 +78,41 @@ def get_status(
             "max_drawdown": result.max_drawdown,
             "sharpe": result.sharpe,
             "win_rate": result.win_rate,
+            # V2 advanced metrics
+            "calmar": result.calmar,
+            "information_ratio": result.information_ratio,
+            "profit_loss_ratio": result.profit_loss_ratio,
+            "benchmark_return": result.benchmark_return,
         }
         data["equity_curve"] = result.equity_curve
+        data["benchmark_curve"] = result.benchmark_curve
         data["trades"] = result.trades
     return _ok(data)
+
+
+@router.get("/{run_id}/drawdown")
+def get_drawdown(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> dict:
+    """The drawdown curve for a finished run (V2)."""
+    run = backtest_service.get_run(db, run_id)
+    if run is None or (run.user_id is not None and run.user_id != user_id):
+        return _ok(None, msg="run not found")
+    result = backtest_service.get_result(db, run_id)
+    return _ok(result.drawdown_curve if result else None)
+
+
+@router.get("/{run_id}/positions")
+def get_positions(
+    run_id: str,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+) -> dict:
+    """The position (holding size) curve for a finished run (V2)."""
+    run = backtest_service.get_run(db, run_id)
+    if run is None or (run.user_id is not None and run.user_id != user_id):
+        return _ok(None, msg="run not found")
+    result = backtest_service.get_result(db, run_id)
+    return _ok(result.position_curve if result else None)

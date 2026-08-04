@@ -25,11 +25,28 @@ import { useQuery } from '@tanstack/react-query';
 import ReactECharts from 'echarts-for-react';
 import { getBacktest, submitBacktest } from '../api/backtest';
 import { listStrategies } from '../api/strategy';
+import {
+  getDrawdownCurve,
+  getPositionCurve,
+  type DrawdownPoint,
+  type PositionPoint,
+} from '../api/backtest';
 import { colorForChange, fmtMoney, fmtPct } from '../utils/format';
 import EmptyState from '../components/EmptyState';
+import DrawdownChart from '../components/DrawdownChart';
+import PositionChart from '../components/PositionChart';
+import EquityVsBenchmark from '../components/EquityVsBenchmark';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
+
+// Benchmark options for the V2 equity-vs-benchmark comparison.
+const BENCHMARK_OPTIONS = [
+  { label: '上证指数 (sh000001)', value: 'sh000001' },
+  { label: '深证成指 (sz399001)', value: 'sz399001' },
+  { label: '沪深300 ETF (510300)', value: '510300' },
+  { label: '创业板指 (sz399006)', value: 'sz399006' },
+];
 
 // Strategy metadata (mirrors /strategy response + backend registry).
 interface StrategyParam {
@@ -65,6 +82,11 @@ interface BacktestMetrics {
   max_drawdown?: number | null;
   sharpe?: number | null;
   win_rate?: number | null;
+  // V2 advanced metrics
+  calmar?: number | null;
+  information_ratio?: number | null;
+  profit_loss_ratio?: number | null;
+  benchmark_return?: number | null;
 }
 interface BacktestResult {
   run_id: string;
@@ -73,6 +95,7 @@ interface BacktestResult {
   error?: string;
   metrics?: BacktestMetrics;
   equity_curve?: EquityPoint[];
+  benchmark_curve?: EquityPoint[];
   trades?: TradeRow[];
 }
 
@@ -177,6 +200,10 @@ export default function Backtest() {
     }
     lastParamsRef.current = strategyParams;
 
+    // V2: benchmark is a run-level param. The backend pops it out of `params`
+    // before handing them to the backtrader Strategy (see backtest_service).
+    if (vals.benchmark) strategyParams.benchmark = vals.benchmark;
+
     const req = {
       strategy: selectedStrategy,
       params: strategyParams,
@@ -211,6 +238,7 @@ export default function Backtest() {
               initial_cash: 100000,
               commission: 0.0003,
               slippage: 0.0001,
+              benchmark: 'sh000001',
               range: [dayjs().subtract(1, 'year'), dayjs()] as [Dayjs, Dayjs],
             }}
             onValuesChange={(changed) => {
@@ -249,6 +277,14 @@ export default function Backtest() {
                   />
                 </Form.Item>
               ))}
+
+            <Form.Item label="基准" name="benchmark">
+              <Select
+                placeholder="选择基准"
+                allowClear
+                options={BENCHMARK_OPTIONS}
+              />
+            </Form.Item>
 
             <Form.Item label="股票池" required>
               <Space.Compact style={{ width: '100%' }}>
@@ -353,6 +389,29 @@ export default function Backtest() {
   );
 }
 
+// V2 — fetch the drawdown + position curves for a finished run. Lifted into a
+// dedicated component so we can hook useQuery on the run_id.
+function AdvancedCharts({ runId }: { runId: string }) {
+  const ddQ = useQuery<DrawdownPoint[] | null>({
+    queryKey: ['backtest', runId, 'drawdown'],
+    queryFn: () => getDrawdownCurve(runId),
+  });
+  const posQ = useQuery<PositionPoint[] | null>({
+    queryKey: ['backtest', runId, 'positions'],
+    queryFn: () => getPositionCurve(runId),
+  });
+  return (
+    <Row gutter={[12, 12]}>
+      <Col xs={24} lg={12}>
+        <DrawdownChart data={ddQ.data ?? null} loading={ddQ.isLoading} />
+      </Col>
+      <Col xs={24} lg={12}>
+        <PositionChart data={posQ.data ?? null} loading={posQ.isLoading} />
+      </Col>
+    </Row>
+  );
+}
+
 function ResultView({ result }: { result: BacktestResult }) {
   if (result.status === 'failed' || result.error) {
     return (
@@ -379,9 +438,12 @@ function ResultView({ result }: { result: BacktestResult }) {
   const trades = result.trades ?? [];
   const hasTrades = trades.length > 0;
   const rr = metrics.return_rate ?? null;
+  const benchmarkCurve = result.benchmark_curve ?? [];
+  const hasBenchmark = benchmarkCurve.length > 0;
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {/* Headline metrics */}
       <Row gutter={[12, 12]}>
         <Col xs={12} sm={6}>
           <Card size="small">
@@ -416,6 +478,51 @@ function ResultView({ result }: { result: BacktestResult }) {
         </Col>
       </Row>
 
+      {/* V2 advanced metrics */}
+      <Row gutter={[12, 12]}>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic
+              title="卡玛比率"
+              value={metrics.calmar != null ? Number(metrics.calmar).toFixed(2) : '--'}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic
+              title="信息比率"
+              value={
+                metrics.information_ratio != null
+                  ? Number(metrics.information_ratio).toFixed(2)
+                  : '--'
+              }
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic
+              title="盈亏比"
+              value={
+                metrics.profit_loss_ratio != null
+                  ? Number(metrics.profit_loss_ratio).toFixed(2)
+                  : '--'
+              }
+            />
+          </Card>
+        </Col>
+        <Col xs={12} sm={6}>
+          <Card size="small">
+            <Statistic
+              title="基准收益"
+              value={fmtPct(metrics.benchmark_return)}
+              valueStyle={{ color: colorForChange(metrics.benchmark_return) }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
       {!hasTrades && (
         <Alert
           type="warning"
@@ -424,15 +531,28 @@ function ResultView({ result }: { result: BacktestResult }) {
         />
       )}
 
+      {/* V2: strategy vs benchmark (replaces the standalone equity chart when a
+          benchmark curve is present; otherwise show the strategy-only curve). */}
       {result.equity_curve && result.equity_curve.length > 0 ? (
-        <Card size="small" title="净值曲线">
-          <EquityChart curve={result.equity_curve} />
-        </Card>
+        hasBenchmark ? (
+          <EquityVsBenchmark
+            equity={result.equity_curve}
+            benchmark={benchmarkCurve}
+            benchmarkName="基准"
+          />
+        ) : (
+          <Card size="small" title="净值曲线">
+            <EquityChart curve={result.equity_curve} />
+          </Card>
+        )
       ) : (
         <Card size="small" title="净值曲线">
           <EmptyState description="无净值数据" />
         </Card>
       )}
+
+      {/* V2: drawdown + position charts */}
+      <AdvancedCharts runId={result.run_id} />
 
       <Card size="small" title="交易明细">
         {hasTrades ? (

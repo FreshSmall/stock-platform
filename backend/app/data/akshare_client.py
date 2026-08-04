@@ -16,6 +16,7 @@ Note: ``日期`` is returned as a Python ``str`` ('YYYY-MM-DD'), NOT a Timestamp
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from datetime import date, datetime, time as dtime
 from typing import Any
 
 import akshare as ak
@@ -463,6 +464,146 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+# ============================================================================
+# V2 阶段 N1：新闻资讯采集（BP-V2-008）。
+#
+# 复用 V1.5 的 ``_with_timeout`` 30s 墙钟超时保护 + ``_throttle`` + ``@retry``
+# —— eastmoney/财联社的反爬同样会让 akshare 的 ``requests`` 调用挂起，必须用
+# 硬墙钟兜底。返回的 dict 字段名统一为英文，sync 层不碰中文表头。
+#
+# 三个来源（akshare 1.18.80 实测列名）：
+# * ``stock_info_global_cls``  财联社 24h 电报  — 标题/内容/发布日期/发布时间
+# * ``stock_info_global_em``   东财全球财经快讯   — 标题/摘要/发布时间/链接
+# * ``stock_news_em(symbol)``  东财个股资讯      — 关键词/新闻标题/新闻内容/
+#                                                 发布时间/文章来源
+# ============================================================================
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_news_cls() -> list[dict]:
+    """抓取财联社（cls）24h 实时电报。
+
+    :return: list of dicts，键为 ``pub_time, title, content, source``，其中
+        ``source='cls'``。``pub_time`` 为 :class:`datetime.datetime`（由
+        发布日期 + 发布时间 拼装）。空列表表示上游无数据。
+
+    Source: ``ak.stock_info_global_em`` 不带参数；实测列 ``标题/内容/发布日期/
+    发布时间``。
+    """
+    _throttle()
+    df = _with_timeout(ak.stock_info_global_cls)
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        pub_time = _combine_date_time(row.get("发布日期"), row.get("发布时间"))
+        title = row.get("标题") or ""
+        content = row.get("内容")
+        # 财联社标题有时为空（电报条目），用正文首句兜底，便于后续展示。
+        if not title and content:
+            title = str(content).split("】", 1)[-1].split("\n", 1)[0][:300]
+        out.append(
+            {
+                "pub_time": pub_time,
+                "title": str(title)[:300] if title else None,
+                "content": str(content) if content is not None else None,
+                "source": "cls",
+            }
+        )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_news_em() -> list[dict]:
+    """抓取东方财富（em）全球财经实时快讯。
+
+    :return: list of dicts，键为 ``pub_time, title, content, source``，其中
+        ``source='em'``。``content`` 取自 ``摘要`` 列。
+
+    Source: ``ak.stock_info_global_em``；实测列 ``标题/摘要/发布时间/链接``，
+    ``发布时间`` 形如 ``'2026-08-04 08:50:03'``。
+    """
+    _throttle()
+    df = _with_timeout(ak.stock_info_global_em)
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        title = row.get("标题")
+        out.append(
+            {
+                "pub_time": _parse_datetime(row.get("发布时间")),
+                "title": str(title)[:300] if title else None,
+                "content": str(row.get("摘要")) if row.get("摘要") is not None else None,
+                "source": "em",
+            }
+        )
+    return out
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_news_em_stock(symbol: str) -> list[dict]:
+    """抓取东方财富个股资讯（带关联个股代码）。
+
+    :param symbol: 6 位个股代码，例如 ``'600519'``。
+    :return: list of dicts，键为 ``pub_time, title, content, source,
+        stock_codes``，其中 ``source='em-stock'``，``stock_codes=[symbol]``。
+
+    Source: ``ak.stock_news_em(symbol)``；实测列 ``关键词/新闻标题/新闻内容/
+    发布时间/文章来源``，``发布时间`` 形如 ``'2026-08-03 18:43:00'``。
+    """
+    _throttle()
+    df = _with_timeout(ak.stock_news_em, symbol=symbol)
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        title = row.get("新闻标题")
+        content = row.get("新闻内容")
+        out.append(
+            {
+                "pub_time": _parse_datetime(row.get("发布时间")),
+                "title": str(title)[:300] if title else None,
+                "content": str(content) if content is not None else None,
+                "source": "em-stock",
+                "stock_codes": [symbol],
+            }
+        )
+    return out
+
+
+def fetch_news(source: str = "cls") -> list[dict]:
+    """新闻资讯统一入口：按 ``source`` 分派到具体抓取函数。
+
+    :param source: ``'cls'``（财联社，默认）/ ``'em'``（东财全球）/ ``'em-stock'``
+        （东财个股，需要先指定 ``symbol``，见 :func:`fetch_news_em_stock`）。
+    :return: 合并后的资讯 dict 列表（字段同各分派函数）。
+
+    之所以再封一层：sync 层只关心“拉一批新闻”，不关心具体接口；这里集中做
+    source 路由，便于以后扩 ``news_cctv`` 等新源而无需改 sync。
+    """
+    if source == "em":
+        return fetch_news_em()
+    if source == "em-stock":
+        # em-stock 需要个股代码，这里返回空（调用方应直接用
+        # fetch_news_em_stock）；保留分支只为路由完整性。
+        return []
+    # 默认 cls
+    return fetch_news_cls()
+
+
 def _to_int(v: Any) -> int | None:
     try:
         if v is None:
@@ -504,3 +645,65 @@ def _trade_date_from_time(trade_time: str) -> str | None:
     if not trade_time or len(trade_time) < 10:
         return None
     return trade_time[:10]
+
+
+def _parse_datetime(v: Any) -> datetime | None:
+    """把 akshare 返回的时间值统一解析为 :class:`datetime.datetime`。
+
+    覆盖三种输入：
+    * ``'YYYY-MM-DD HH:MM:SS'`` / ``'YYYY-MM-DD HH:MM'`` 字符串
+      （东财 stock_info_global_em / stock_news_em 实际返回）
+    * 已是 :class:`datetime.datetime` / :class:`datetime.date`
+    * pandas ``Timestamp``（带 ``to_pydatetime``）
+    解析失败返回 None（不抛异常 —— sync 层会把 None 写入 NULL）。
+    """
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, date):
+        return datetime(v.year, v.month, v.day)
+    # pandas Timestamp 等
+    to_py = getattr(v, "to_pydatetime", None)
+    if callable(to_py):
+        try:
+            return to_py()
+        except Exception:
+            pass
+    try:
+        s = str(v).strip()
+    except Exception:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            # 截到该格式所需长度，容忍尾部多余字符（如时区）。
+            return datetime.strptime(s[:_FMT_LEN[fmt]], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# 各 format 对应需要截取的字符串长度。
+_FMT_LEN = {
+    "%Y-%m-%d %H:%M:%S": 19,
+    "%Y-%m-%d %H:%M": 16,
+    "%Y-%m-%d": 10,
+}
+
+
+def _combine_date_time(d: Any, t: Any) -> datetime | None:
+    """把财联社的 ``发布日期`` + ``发布时间`` 两列拼成一个 :class:`datetime`。
+
+    财联社接口分开返回 ``datetime.date`` 和 ``datetime.time``；任意一项缺失
+    则返回 None。
+    """
+    if d is None or t is None:
+        return None
+    try:
+        d_part = d if isinstance(d, date) else _parse_datetime(d)
+        t_part = t if isinstance(t, dtime) else None
+        if d_part is None or t_part is None:
+            return None
+        return datetime.combine(d_part, t_part)
+    except Exception:
+        return None
