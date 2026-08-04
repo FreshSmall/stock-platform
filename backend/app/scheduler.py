@@ -106,6 +106,9 @@ def init_scheduler() -> BackgroundScheduler:
         ("money_flow_detail_sync", 17, 5),
         ("sector_sync", 17, 10),
         ("dragon_tiger_sync", 18, 0),        # dragon-tiger publishes ~17:30
+        # V2 agents
+        ("market_agent_sync", 18, 10),        # after data is settled
+        ("review_agent_sync", 18, 20),
     ]
     for name, h, m in _v15_jobs:
         sched.add_job(
