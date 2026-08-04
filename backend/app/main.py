@@ -14,6 +14,7 @@ from app.api.backtest import router as backtest_router
 from app.api.dragon_tiger import router as dragon_tiger_router
 from app.api.factor import router as factor_router
 from app.api.market import router as market_router
+from app.api.portfolio import router as portfolio_router
 from app.api.sector import router as sector_router
 from app.api.stock import router as stock_router
 from app.api.stocks import router as stocks_router
@@ -89,5 +90,6 @@ router.include_router(assistant_router)
 router.include_router(dragon_tiger_router)
 router.include_router(sector_router)
 router.include_router(factor_router)
+router.include_router(portfolio_router)
 router.include_router(admin_router)
 app.include_router(router)

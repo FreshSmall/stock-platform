@@ -15,6 +15,7 @@ from app.models.backtest import SaBacktestResult, SaBacktestRun
 from app.models.factor import SaFactorIc, SaFactorValue
 from app.models.finance import SaFinancialExtra, SaMoneyFlow
 from app.models.knowledge import SaKnowledgeChunk, SaKnowledgeDoc
+from app.models.portfolio import SaPortfolio, SaPortfolioHolding
 from app.models.market_data import (
     SaAdminTaskLog,
     SaDragonTiger,
@@ -65,4 +66,7 @@ __all__ = [
     # application-managed sa_ tables (V2 阶段 L: RAG 知识库)
     "SaKnowledgeDoc",
     "SaKnowledgeChunk",
+    # application-managed sa_ tables (V2 阶段 K3: 组合管理)
+    "SaPortfolio",
+    "SaPortfolioHolding",
 ]
