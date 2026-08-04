@@ -11,8 +11,10 @@ are owned and written by this service.
 
 from app.core.database import Base
 from app.models.ai import SaAiAnalysis, SaAiChatMessage, SaAiChatSession
+from app.models.agent import SaAgentReport
 from app.models.backtest import SaBacktestResult, SaBacktestRun
 from app.models.factor import SaFactorIc, SaFactorValue
+from app.models.news import SaNewsSentiment
 from app.models.finance import SaFinancialExtra, SaMoneyFlow
 from app.models.knowledge import SaKnowledgeChunk, SaKnowledgeDoc
 from app.models.portfolio import SaPortfolio, SaPortfolioHolding
@@ -69,4 +71,8 @@ __all__ = [
     # application-managed sa_ tables (V2 阶段 K3: 组合管理)
     "SaPortfolio",
     "SaPortfolioHolding",
+    # application-managed sa_ tables (V2 阶段 M: Agent 报告)
+    "SaAgentReport",
+    # application-managed sa_ tables (V2 阶段 N1: 新闻情绪采集)
+    "SaNewsSentiment",
 ]
