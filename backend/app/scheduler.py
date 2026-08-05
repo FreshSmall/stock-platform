@@ -1,7 +1,9 @@
 """APScheduler job registration.
 
 Jobs:
-- ``daily_k_sync``: weekdays 16:30 Asia/Shanghai → incremental daily-K sync.
+- ``daily_k_sync``: weekdays 17:30 Asia/Shanghai → incremental daily-K sync.
+- ``daily_k_sync_retry``: weekdays 23:00 → retry only the codes that failed
+  in the 17:30 run. Skipped (no-op) when the 17:30 run had zero failures.
 
 The scheduler is NOT started on import (that would create side effects and
 background threads during tests / collection). Call :func:`init_scheduler`
@@ -19,30 +21,51 @@ logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
 
-# MVP safety cap: never sync more than this many codes per run during dev.
-# Remove / raise once the full-market run is proven stable.
-_MAX_CODES_PER_RUN = 50
 # Look-back window for the incremental pull.
 _LOOKBACK_DAYS = 7
 
+# Codes that failed in the 17:30 main run, replayed by the 23:00 retry job.
+# Process-local state — a restart clears it, which is safe: with no failure
+# record the retry is a no-op and the next 17:30 run still covers everything.
+_last_run_failed_codes: list[str] = []
 
-def run_daily_sync(max_codes: int | None = None) -> None:
-    """Entry point for the daily-K sync job (runs in a background thread).
+
+def _sync_codes(db, codes, start: str, end: str) -> tuple[int, list[str]]:
+    """Sync ``codes`` over ``[start, end]`` and return ``(rows, failed)``.
+
+    Shared by the 17:30 main run and the 23:00 retry. A failure on one code
+    logs an error but does not abort the run; the failing code is collected
+    into the returned ``failed`` list so the caller can replay it.
+    """
+    from app.data import sync_daily
+
+    total = 0
+    failed: list[str] = []
+    for code in codes:
+        try:
+            total += sync_daily.sync_one_stock(db, code, start, end)
+        except Exception as e:  # noqa: BLE001 - log and continue per code
+            logger.error("sync failed for %s: %s", code, e)
+            failed.append(code)
+    return total, failed
+
+
+def run_daily_sync() -> None:
+    """Entry point for the 17:30 daily-K sync job (runs in a background thread).
 
     Pulls the most recent pool snapshot's codes and syncs the last
-    ``_LOOKBACK_DAYS`` calendar days for each. ``max_codes`` caps the number of
-    codes per run (default :data:`_MAX_CODES_PER_RUN` for the scheduled MVP
-    run; pass a large number / None for a full-pool back-fill). A failure on
-    one code logs an error but does not abort the run.
+    ``_LOOKBACK_DAYS`` calendar days for **every** code in the snapshot
+    (full market). Codes that fail are recorded in
+    :data:`_last_run_failed_codes` for the 23:00 retry job.
     """
+    global _last_run_failed_codes
+
     # Local imports keep module import side-effect-free (no DB/session at
     # import time) and avoid a circular ref with app.core.database.
     from app.core.database import SessionLocal
-    from app.data import sync_daily
     from app.models.stock import StockPool
 
-    cap = _MAX_CODES_PER_RUN if max_codes is None else max_codes
-    logger.info("daily sync job started (cap=%s)", cap)
+    logger.info("daily sync job started (full market)")
     db = SessionLocal()
     try:
         latest_sp = db.execute(
@@ -50,6 +73,7 @@ def run_daily_sync(max_codes: int | None = None) -> None:
         ).scalar()
         if latest_sp is None:
             logger.warning("daily sync: stock_pool empty, nothing to sync")
+            _last_run_failed_codes = []
             return
         codes = (
             db.execute(
@@ -64,15 +88,51 @@ def run_daily_sync(max_codes: int | None = None) -> None:
         start = (date.today() - timedelta(days=_LOOKBACK_DAYS)).strftime(
             "%Y%m%d"
         )
-        total = 0
-        for code in codes[:cap]:
-            try:
-                total += sync_daily.sync_one_stock(db, code, start, end)
-            except Exception as e:  # noqa: BLE001 - log and continue per code
-                logger.error("sync failed for %s: %s", code, e)
-        logger.info("daily sync job done: %d rows", total)
+        total, failed = _sync_codes(db, codes, start, end)
+        _last_run_failed_codes = failed
+        logger.info(
+            "daily sync job done: %d rows, %d codes failed (will retry at 23:00)",
+            total,
+            len(failed),
+        )
     finally:
         db.close()
+
+
+def run_daily_sync_retry() -> None:
+    """Entry point for the 23:00 retry job.
+
+    Replays only the codes recorded in :data:`_last_run_failed_codes` from the
+    17:30 run (full market). A no-op (just logs) when there were no failures.
+    The failure list is cleared after the run regardless of outcome, so a code
+    that fails twice is not retried a third time automatically — it will be
+    picked up by the next day's full 17:30 run.
+    """
+    global _last_run_failed_codes
+
+    if not _last_run_failed_codes:
+        logger.info("retry sync skipped: no failed codes from the 17:30 run")
+        return
+
+    from app.core.database import SessionLocal
+
+    codes = _last_run_failed_codes
+    logger.info("retry sync started: %d failed codes", len(codes))
+    db = SessionLocal()
+    try:
+        end = date.today().strftime("%Y%m%d")
+        start = (date.today() - timedelta(days=_LOOKBACK_DAYS)).strftime(
+            "%Y%m%d"
+        )
+        total, still_failing = _sync_codes(db, codes, start, end)
+        logger.info(
+            "retry sync done: %d rows recovered, %d codes still failing",
+            total,
+            len(still_failing),
+        )
+    finally:
+        db.close()
+        _last_run_failed_codes = []
 
 
 def init_scheduler() -> BackgroundScheduler:
@@ -81,7 +141,9 @@ def init_scheduler() -> BackgroundScheduler:
     Idempotent: calling twice returns the same scheduler instance.
 
     Registered jobs (all weekdays, Asia/Shanghai):
-    - ``daily_k_sync``: 16:30 (V1)
+    - ``daily_k_sync``: 17:30 (V1)
+    - ``daily_k_sync_retry``: 23:00 — replays only the codes that failed in
+      the 17:30 run; a no-op when there were no failures.
     - V1.5 data jobs run after the daily-K sync so their inputs exist.
       Each V1.5 job delegates to :func:`admin_service.run_task` so the run is
       recorded in ``sa_admin_task_log`` (same path as a manual admin trigger).
@@ -92,8 +154,15 @@ def init_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     sched.add_job(
         run_daily_sync,
-        CronTrigger(hour=16, minute=30, day_of_week="mon-fri"),
+        CronTrigger(hour=17, minute=30, day_of_week="mon-fri"),
         id="daily_k_sync",
+        replace_existing=True,
+        coalesce=True,
+    )
+    sched.add_job(
+        run_daily_sync_retry,
+        CronTrigger(hour=23, minute=0, day_of_week="mon-fri"),
+        id="daily_k_sync_retry",
         replace_existing=True,
         coalesce=True,
     )

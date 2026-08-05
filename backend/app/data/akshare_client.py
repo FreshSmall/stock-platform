@@ -92,6 +92,15 @@ def fetch_daily_quotes(
 ) -> list[dict]:
     """Fetch daily OHLCV for one A-share symbol.
 
+    Primary source: akshare (``stock_zh_a_hist`` → eastmoney). On repeated
+    failure (eastmoney anti-bot / network), falls back to the Tencent
+    front-adjusted kline source, which is empirically stable where eastmoney
+    is not. The fallback rows carry ``amount=None`` and ``turnover=None``
+    (Tencent does not expose them) and a self-computed ``pct_change``.
+
+    An *empty* akshare frame is NOT a failure — it means the symbol genuinely
+    has no bars in the window, so we return ``[]`` without invoking Tencent.
+
     :param symbol: 6-digit code, e.g. ``'600519'``.
     :param start_date: ``'YYYYMMDD'`` (inclusive).
     :param end_date: ``'YYYYMMDD'`` (inclusive).
@@ -100,17 +109,38 @@ def fetch_daily_quotes(
         ``str`` like ``'2026-07-20'`` (parsed downstream). Empty list if the
         upstream frame was empty.
     """
-    _throttle()
-    df = _with_timeout(
-        ak.stock_zh_a_hist,
-        symbol=symbol,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust="qfq",
-    )
-    if df is None or df.empty:
-        return []
+    # Primary: akshare (eastmoney). @retry above retries transient blips; if
+    # all 3 attempts fail the exception propagates here and we fall back.
+    try:
+        _throttle()
+        df = _with_timeout(
+            ak.stock_zh_a_hist,
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq",
+        )
+        if df is None or df.empty:
+            return []
+        return _frame_to_rows(symbol, df)
+    except Exception as e:
+        logger.warning(
+            "akshare failed for %s, falling back to Tencent: %s",
+            symbol,
+            e,
+        )
+    # Fallback: Tencent (stable, no IP ban).
+    return _fetch_daily_quotes_tencent(symbol, start_date, end_date)
+
+
+def _frame_to_rows(symbol: str, df) -> list[dict]:
+    """Convert an akshare daily frame to the canonical row-dict list.
+
+    Shared by the akshare primary path so the fallback does not duplicate the
+    column mapping. Expects akshare 1.18.80 column names
+    (``日期/开盘/收盘/最高/最低/成交量/成交额/涨跌幅/换手率``).
+    """
     out: list[dict] = []
     for _, row in df.iterrows():
         out.append(
@@ -127,6 +157,118 @@ def fetch_daily_quotes(
                 "turnover": _to_float(row.get("换手率")),
             }
         )
+    return out
+
+
+# Tencent front-adjusted daily kline — the eastmoney anti-bot fallback.
+# Ported from Vibe-Research's ``_kline_tencent``; Tencent does not rate-limit
+# by IP and returns in well under a second, making it a reliable secondary.
+_TENCENT_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def _tencent_prefix(code: str) -> str:
+    """Map a 6-digit A-share code to the Tencent exchange prefix.
+
+    ``6/9/5`` → ``sh`` (Shanghai main board / STAR / ETF — we only need the
+    equity subset but the prefix rule is uniform), ``8`` → ``bj`` (Beijing),
+    everything else → ``sz`` (Shenzhen main board / ChiNet).
+    """
+    if not code:
+        return "sz"
+    head = code[0]
+    if head in ("6", "9", "5"):
+        return "sh"
+    if head == "8":
+        return "bj"
+    return "sz"
+
+
+def _fetch_daily_quotes_tencent(
+    symbol: str, start_date: str, end_date: str
+) -> list[dict]:
+    """Tencent front-adjusted daily kline fallback for one A-share symbol.
+
+    Tencent serves "the most recent *N* bars" rather than a date range, so we
+    estimate *N* from the requested window (calendar-day span + a buffer for
+    holidays/weekends, capped at 400) and filter to ``[start_date, end_date]``
+    on the client side.
+
+    Returns rows with the same schema as :func:`fetch_daily_quotes`, except:
+    * ``amount`` and ``turnover`` are ``None`` (Tencent does not expose them).
+    * ``pct_change`` is computed from consecutive closes (Tencent omits it).
+
+    On any error returns ``[]`` — the caller will record the code as failed so
+    the 23:00 retry can pick it up.
+    """
+    import requests
+    from datetime import datetime
+
+    # Estimate how many bars cover the window. Trading days ≈ 5/7 of calendar
+    # days; add a 50-bar buffer so a window starting mid-week still fits, and
+    # cap so a wildly large window doesn't ask Tencent for thousands of bars.
+    try:
+        start_dt = datetime.strptime(start_date, "%Y%m%d").date()
+        end_dt = datetime.strptime(end_date, "%Y%m%d").date()
+    except ValueError:
+        return []
+    span = max((end_dt - start_dt).days, 7)
+    n = min(int(span * 7 / 5) + 50, 400)
+
+    sym = f"{_tencent_prefix(symbol)}{symbol}"
+    try:
+        r = requests.get(
+            _TENCENT_KLINE,
+            params={"param": f"{sym},day,,,{n},qfq"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = (r.json().get("data") or {}).get(sym) or {}
+    except Exception as e:  # noqa: BLE001 - any failure → empty, let upstream retry later
+        logger.warning("tencent fallback failed for %s: %s", symbol, e)
+        return []
+
+    # Tencent field order per bar: [date, open, close, high, low, volume].
+    # ``qfqday`` is the front-adjusted series; fall back to plain ``day``.
+    raw = data.get("qfqday") or data.get("day") or []
+    start_yyyymmdd = start_date
+    end_yyyymmdd = end_date
+    out: list[dict] = []
+    prev_close: float | None = None
+    for it in raw:
+        if not isinstance(it, list) or len(it) < 6:
+            continue
+        d_str = it[0]  # 'YYYY-MM-DD'
+        d_compact = d_str.replace("-", "")  # 'YYYYMMDD' for range compare
+        if d_compact < start_yyyymmdd or d_compact > end_yyyymmdd:
+            # Still track prev_close so pct_change is correct once we enter range.
+            try:
+                prev_close = float(it[2])
+            except (TypeError, ValueError):
+                prev_close = None
+            continue
+        close = _to_float(it[2])
+        pct = None
+        if prev_close and close:
+            pct = round((close - prev_close) / prev_close * 100, 4)
+        out.append(
+            {
+                "stock_code": symbol,
+                "trade_date": d_str,  # 'YYYY-MM-DD', same shape as akshare
+                "open": _to_float(it[1]),
+                "close": close,
+                "high": _to_float(it[3]),
+                "low": _to_float(it[4]),
+                # Tencent returns volume as a numeric string like
+                # '1061011.000'; _to_int would reject the decimal point, so
+                # round-trip through float first.
+                "volume": int(v) if (v := _to_float(it[5])) is not None else None,
+                "amount": None,  # Tencent does not expose turnover-amount
+                "pct_change": pct,
+                "turnover": None,  # Tencent does not expose turnover-rate
+            }
+        )
+        prev_close = close
     return out
 
 
