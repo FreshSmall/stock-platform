@@ -225,3 +225,7 @@ docker-compose.override.yml
 
 # 本地启动脚本日志
 logs/
+
+# research caches & tool sessions
+backend/.cache_meta_label_frame*.pkl
+.zcode/
