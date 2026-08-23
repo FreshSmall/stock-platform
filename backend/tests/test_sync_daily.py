@@ -115,8 +115,9 @@ def test_sync_one_stock_uses_client(
 
     sample = _make_rows([50.0, 51.0])
 
-    def fake_fetch(code, start_date, end_date):
+    def fake_fetch(code, start_date, end_date, max_bars=400):
         assert code == SENTINEL
+        assert max_bars == 400  # default for the incremental path
         # Dates are passed through but our fake ignores them.
         return sample
 

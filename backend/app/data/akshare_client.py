@@ -107,7 +107,7 @@ def _throttle() -> None:
     reraise=True,
 )
 def fetch_daily_quotes(
-    symbol: str, start_date: str, end_date: str
+    symbol: str, start_date: str, end_date: str, max_bars: int = 400
 ) -> list[dict]:
     """Fetch daily OHLCV for one A-share symbol.
 
@@ -132,19 +132,25 @@ def fetch_daily_quotes(
     :param symbol: 6-digit code, e.g. ``'600519'``.
     :param start_date: ``'YYYYMMDD'`` (inclusive).
     :param end_date: ``'YYYYMMDD'`` (inclusive).
+    :param max_bars: Tencent serves "the latest N bars"; this caps N. The
+        default 400 covers the daily incremental sync. The server clamps
+        very large N to ~640 (verified live 2026-08-19: n=800 → 801 bars,
+        n=1300 → 641), so the multi-year history back-fill passes 640 and
+        splits the window into chunks by the caller.
     :return: list of dicts with keys ``stock_code, trade_date, open, close,
         high, low, volume, amount, pct_change, turnover``. ``trade_date`` is a
         ``str`` like ``'2026-07-20'`` (parsed downstream). Empty list if the
         upstream frame was empty.
     """
     # Primary: Tencent (stable, no IP ban, direct-connect works).
-    rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date)
+    rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date, max_bars=max_bars)
     if rows:
         return rows
     # Same series under an alternate host — bails us out when the primary
     # host serves WAF challenge pages (burst-triggered, see module docstring).
     rows = _fetch_daily_quotes_tencent(
-        symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True
+        symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True,
+        max_bars=max_bars,
     )
     if rows:
         return rows
@@ -283,6 +289,7 @@ def _fetch_daily_quotes_tencent(
     end_date: str,
     url: str = _TENCENT_KLINE,
     extended: bool = False,
+    max_bars: int = 400,
 ) -> list[dict]:
     """Tencent front-adjusted daily kline for one A-share symbol.
 
@@ -292,6 +299,8 @@ def _fetch_daily_quotes_tencent(
         fields — ``[7]`` turnover-rate (%) and ``[8]`` turnover-amount in
         万元 (converted here to 元). The primary host's 6-field bars leave
         them ``None``.
+    :param max_bars: cap on the requested bar count (see
+        :func:`fetch_daily_quotes` for the server-side ~640 clamp).
 
     Tencent serves "the most recent *N* bars" rather than a date range, so we
     estimate *N* from the requested window (calendar-day span + a buffer for
@@ -315,13 +324,21 @@ def _fetch_daily_quotes_tencent(
     except ValueError:
         return []
     span = max((end_dt - start_dt).days, 7)
-    n = min(int(span * 7 / 5) + 50, 400)
+    n = min(int(span * 7 / 5) + 50, max_bars)
 
     sym = f"{_tencent_prefix(symbol)}{symbol}"
+    # Pass the window dates explicitly: without them the endpoint serves "the
+    # latest N bars", which client-side filtering empties for old windows
+    # (verified live 2026-08-19: a 2021-08-19..2022-09-22 chunk returned 0
+    # rows without dates, 266 rows with them — and the eastmoney fallback
+    # covering those chunks is what trips its anti-bot). The client-side
+    # range filter below stays as a belt-and-braces.
+    d_start = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+    d_end = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
     try:
         r = _http.get(
             url,
-            params={"param": f"{sym},day,,,{n},qfq"},
+            params={"param": f"{sym},day,{d_start},{d_end},{n},qfq"},
             timeout=12,
         )
         r.raise_for_status()

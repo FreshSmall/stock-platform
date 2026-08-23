@@ -51,6 +51,12 @@ def _register_runners() -> None:
     )
     from datetime import date as _date
 
+    from app.data import history_backfill as _hist
+
+    def _history_batch(db) -> int:
+        _hist.ensure_state(db)
+        return int(_hist.run_history_batch(db).get("rows", 0))
+
     _wrap("daily_k_sync", lambda db: _daily_k(db))
     _wrap("pool_sync", lambda db: sync_pool.sync_pool_snapshot(db))
     _wrap("minute_k_sync", lambda db: sync_minute.sync_one_stock(db, "600519", period=5))
@@ -64,6 +70,10 @@ def _register_runners() -> None:
     # V2 agents (BP-V2-009~012): daily report generation
     _wrap("market_agent_sync", lambda db: _run_agent(db, "market"))
     _wrap("review_agent_sync", lambda db: _run_agent(db, "review"))
+    # Multi-year history back-fill: one manual batch + a failed-codes reset.
+    # One batch ≈ 15 stocks × ~5 chunks ≈ 80s (fits the 300s task deadline).
+    _wrap("history_backfill", _history_batch)
+    _wrap("history_backfill_reset", lambda db: _hist.reset_failed(db))
 
 
 def _run_agent(db, agent_name: str) -> int:

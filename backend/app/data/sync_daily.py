@@ -92,14 +92,17 @@ def upsert_daily_rows(db: Session, rows: list[dict]) -> int:
 
 
 def sync_one_stock(
-    db: Session, code: str, start_date: str, end_date: str
+    db: Session, code: str, start_date: str, end_date: str, max_bars: int = 400
 ) -> int:
     """Fetch + validate + UPSERT for a single stock.
 
     :param code: 6-digit stock code.
     :param start_date: ``'YYYYMMDD'``.
     :param end_date: ``'YYYYMMDD'``.
+    :param max_bars: per-request bar cap passed to the Tencent source; the
+        default 400 suits incremental windows, the history back-fill passes
+        640 (see :func:`akshare_client.fetch_daily_quotes`).
     :return: number of rows written.
     """
-    rows = akshare_client.fetch_daily_quotes(code, start_date, end_date)
+    rows = akshare_client.fetch_daily_quotes(code, start_date, end_date, max_bars=max_bars)
     return upsert_daily_rows(db, rows)

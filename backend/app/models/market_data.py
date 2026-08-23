@@ -10,6 +10,7 @@ surface beyond the V1 daily-K + financial baseline:
 * :class:`SaMoneyFlowDetail`   - super/big/medium/small order net inflow detail.
 * :class:`SaAdminTaskLog`      - acquisition task execution log (for admin).
 * :class:`SaStockIndustry`     - industry supplement (stock_pool is read-only).
+* :class:`SaHistorySyncState`  - per-stock 5-year history back-fill progress.
 
 All are owned and written by this service; migrated by Alembic.
 """
@@ -233,6 +234,43 @@ class SaStockIndustry(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"SaStockIndustry(id={self.id!r}, stock_code={self.stock_code!r})"
+
+
+class SaHistorySyncState(Base):
+    """Per-stock progress of the multi-year daily-K history back-fill.
+
+    Maps the ``sa_history_sync_state`` table. One row per stock in the current
+    pool snapshot. ``status`` is ``pending`` (still needs history), ``done``
+    (earliest bar reached the per-stock target — ``max(history_start,
+    list_date)`` within :data:`app.data.history_backfill.GRACE_DAYS`), or
+    ``failed`` (``MAX_ATTEMPTS`` exhausted; reset via the admin task).
+    """
+
+    __tablename__ = "sa_history_sync_state"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    target_start: Mapped[date] = mapped_column(Date, nullable=False)
+    earliest_bar: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("stock_code", name="uk_history_code"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"SaHistorySyncState(id={self.id!r}, stock_code={self.stock_code!r}, "
+            f"status={self.status!r}, attempts={self.attempts!r})"
+        )
 
 
 class SaIndexQuote(Base):

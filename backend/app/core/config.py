@@ -47,6 +47,17 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # --- Multi-year daily-K history back-fill (polled, low-rate) -----------
+    # 防封策略（2026-08-16 曾观测到 ~2000 请求突发后腾讯 WAF 501 挑战、东财
+    # IP 封禁数小时）：小批量 + 低频轮询 + 请求间隔节流（见 history_backfill
+    # 模块头）。每轮约 15 只 × ~5 块 ≈ 75 个请求、摊在 ~2.5 分钟里，峰值低于
+    # 1 req/s；且避开 17:15–18:45 的每日全市场同步窗口。全量 ~4200 只补齐约
+    # 需 2~3 天，进度持久化在 sa_history_sync_state。
+    history_backfill_enabled: bool = True
+    history_years: int = 5
+    history_batch_size: int = 15          # stocks per polling tick
+    history_poll_minutes: int = 10        # polling interval
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,

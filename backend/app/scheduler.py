@@ -22,7 +22,10 @@ from apscheduler.events import (
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import func, select
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +282,29 @@ def init_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             coalesce=True,
             misfire_grace_time=600,
+        )
+    # Multi-year history back-fill — low-rate polling (anti-ban profile, see
+    # app.data.history_backfill). ``jitter`` de-synchronises the tick from any
+    # other periodic work; the tick itself skips the 17:15–18:45 daily-sync
+    # quiet window and self-disables once every stock reaches its target.
+    if settings.history_backfill_enabled:
+        from app.data.history_backfill import tick as history_tick
+
+        sched.add_job(
+            history_tick,
+            IntervalTrigger(
+                minutes=settings.history_poll_minutes,
+                jitter=max(60, settings.history_poll_minutes * 12),
+            ),
+            id="history_backfill_tick",
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+        logger.info(
+            "history backfill polling job registered (every %d min)",
+            settings.history_poll_minutes,
         )
     # Surface misfires/exceptions to the log explicitly (APScheduler otherwise
     # only emits a generic "was missed" line) so we can see *why* a job skipped.
