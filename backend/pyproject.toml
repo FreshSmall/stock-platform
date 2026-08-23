@@ -16,6 +16,7 @@ dependencies = [
     "apscheduler",
     "pandas",
     "numpy",
+    "scikit-learn",
     "backtrader",
     "langchain",
     "langchain-community",
