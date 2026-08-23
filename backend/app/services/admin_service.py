@@ -40,19 +40,19 @@ def _register_runners() -> None:
         _TASK_RUNNERS[name] = runner
 
     from app.data import (
-        sync_daily,
         sync_dragon_tiger,
         sync_index,
         sync_industry,
         sync_minute,
         sync_money_flow_detail,
         sync_north_flow,
+        sync_pool,
         sync_sector,
     )
-    from app.services import sentiment_service
     from datetime import date as _date
 
     _wrap("daily_k_sync", lambda db: _daily_k(db))
+    _wrap("pool_sync", lambda db: sync_pool.sync_pool_snapshot(db))
     _wrap("minute_k_sync", lambda db: sync_minute.sync_one_stock(db, "600519", period=5))
     _wrap("dragon_tiger_sync", lambda db: sync_dragon_tiger.sync_date(db, _date.today().strftime("%Y%m%d")))
     _wrap("north_flow_sync", lambda db: sync_north_flow.sync_all(db))
@@ -86,6 +86,7 @@ def _sentiment(db) -> int:
     from sqlalchemy import func as _f
 
     from app.models.stock import DailyPrice
+    from app.services import sentiment_service
 
     # Pick the latest date with settled bars (non-NULL pct_change); a bare max
     # would pick the current in-progress session whose rows have NULL pct_change
