@@ -2,8 +2,10 @@
 
 Jobs:
 - ``daily_k_sync``: weekdays 17:30 Asia/Shanghai → incremental daily-K sync.
-- ``daily_k_sync_retry``: weekdays 23:00 → retry only the codes that failed
-  in the 17:30 run. Skipped (no-op) when the 17:30 run had zero failures.
+- ``daily_k_sync_retry``: weekdays 23:00 → if today's row count is far below
+  the recent baseline (partial 17:30 run, even across a restart), re-run the
+  full sync; otherwise retry only the codes that failed in the 17:30 run.
+  Skipped (no-op) when the 17:30 run had zero failures.
 
 The scheduler is NOT started on import (that would create side effects and
 background threads during tests / collection). Call :func:`init_scheduler`
@@ -13,11 +15,37 @@ from the FastAPI lifespan in :mod:`app.main`.
 import logging
 from datetime import date, timedelta
 
+from apscheduler.events import (
+    EVENT_JOB_ERROR,
+    EVENT_JOB_EXECUTED,
+    EVENT_JOB_MISSED,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
+
+
+def _on_scheduler_event(event) -> None:
+    """Log scheduler outcomes explicitly so misfires/errors aren't silent.
+
+    Without this APScheduler prints a generic "was missed by N" line per job
+    with no level/context; this raises misfires to WARNING and errors to ERROR
+    so they stand out in the log.
+    """
+    # event.code is one of EVENT_JOB_*; job_id/exception live on the event.
+    if event.code == EVENT_JOB_MISSED:
+        logger.warning(
+            "job %s MISSED its scheduled time (scheduled run was not executed)",
+            getattr(event, "job_id", "?"),
+        )
+    elif event.code == EVENT_JOB_ERROR:
+        logger.error(
+            "job %s raised: %r",
+            getattr(event, "job_id", "?"),
+            getattr(event, "exception", None),
+        )
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -95,6 +123,41 @@ def run_daily_sync() -> None:
             total,
             len(failed),
         )
+    except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
+        # Without this, a DB/network storm (e.g. port exhaustion) propagates to
+        # APScheduler and can freeze the scheduler thread — observed freezing
+        # all subsequent jobs for 20+ hours. Catch, log, let the next run retry.
+        logger.exception("daily sync job failed")
+    finally:
+        db.close()
+
+
+def _today_looks_incomplete() -> bool:
+    """Whether today's daily-K row count is far below the recent baseline.
+
+    Used by the 23:00 retry as a self-check that survives restarts: the
+    in-memory failure list is wiped by a process restart, but a partial 17:30
+    run (observed 2026-08-14: 1546 of ~4168 codes) still leaves today
+    under-filled, and that is visible in the data itself.
+
+    Returns False when there is nothing to compare against (no prior settled
+    days). On a weekday holiday this reports True and the retry fires a full
+    sync that writes nothing — the same waste the 17:30 job already incurs
+    on holidays, accepted for simplicity.
+    """
+    from app.core.database import SessionLocal
+    from app.data.backfill import _COMPLETENESS_RATIO, settled_counts
+
+    db = SessionLocal()
+    try:
+        today = date.today()
+        counts = settled_counts(db)
+        today_count = counts.get(today, 0)
+        prior = [c for d, c in counts.items() if d < today]
+        if not prior:
+            return False
+        baseline = max(prior)
+        return today_count < _COMPLETENESS_RATIO * baseline
     finally:
         db.close()
 
@@ -102,13 +165,30 @@ def run_daily_sync() -> None:
 def run_daily_sync_retry() -> None:
     """Entry point for the 23:00 retry job.
 
-    Replays only the codes recorded in :data:`_last_run_failed_codes` from the
-    17:30 run (full market). A no-op (just logs) when there were no failures.
-    The failure list is cleared after the run regardless of outcome, so a code
-    that fails twice is not retried a third time automatically — it will be
-    picked up by the next day's full 17:30 run.
+    First a restart-proof self-check: if today's settled-row count is far
+    below the recent baseline, the 17:30 run (or the process) died partway —
+    re-run the FULL sync; the per-code upsert is idempotent so this only
+    costs the redundant fetches.
+
+    Otherwise, replays only the codes recorded in
+    :data:`_last_run_failed_codes` from the 17:30 run. A no-op (just logs)
+    when there were no failures. The failure list is cleared after the run
+    regardless of outcome, so a code that fails twice is not retried a third
+    time automatically — it will be picked up by the next day's full 17:30
+    run.
     """
     global _last_run_failed_codes
+
+    try:
+        if _today_looks_incomplete():
+            logger.warning(
+                "retry sync: today's daily-K looks incomplete vs recent "
+                "baseline — re-running the full 17:30 sync"
+            )
+            run_daily_sync()
+            return
+    except Exception:  # noqa: BLE001 - self-check must not kill the replay below
+        logger.exception("retry sync: completeness self-check failed")
 
     if not _last_run_failed_codes:
         logger.info("retry sync skipped: no failed codes from the 17:30 run")
@@ -130,6 +210,8 @@ def run_daily_sync_retry() -> None:
             total,
             len(still_failing),
         )
+    except Exception:  # noqa: BLE001 - same rationale as run_daily_sync
+        logger.exception("retry sync job failed")
     finally:
         db.close()
         _last_run_failed_codes = []
@@ -151,6 +233,12 @@ def init_scheduler() -> BackgroundScheduler:
     global _scheduler
     if _scheduler is not None:
         return _scheduler
+    # ``misfire_grace_time`` is generous on purpose: if a previous run (or the
+    # startup back-fill) clogs the single ThreadPoolExecutor, a cron firing may
+    # not be picked up until minutes later. The default 1s grace would then
+    # discard it as MISSED — which is how we silently lost an entire day's
+    # daily-K sync. 10 min tolerates a slow prior job without re-running stale
+    # ones hours later (``coalesce=True`` still collapses the backlog to 1).
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     sched.add_job(
         run_daily_sync,
@@ -158,6 +246,7 @@ def init_scheduler() -> BackgroundScheduler:
         id="daily_k_sync",
         replace_existing=True,
         coalesce=True,
+        misfire_grace_time=600,
     )
     sched.add_job(
         run_daily_sync_retry,
@@ -165,10 +254,12 @@ def init_scheduler() -> BackgroundScheduler:
         id="daily_k_sync_retry",
         replace_existing=True,
         coalesce=True,
+        misfire_grace_time=600,
     )
     # V1.5 jobs — registered via admin_service so they share the logging path.
     # (task_name, hour, minute)
     _v15_jobs = [
+        ("pool_sync", 16, 25),                # universe refresh, before everything that reads it
         ("index_sync", 16, 35),              # indices via Tencent source, stable
         ("sentiment_sync", 16, 45),          # after daily_k_sync
         ("north_flow_sync", 17, 0),
@@ -187,7 +278,14 @@ def init_scheduler() -> BackgroundScheduler:
             id=name,
             replace_existing=True,
             coalesce=True,
+            misfire_grace_time=600,
         )
+    # Surface misfires/exceptions to the log explicitly (APScheduler otherwise
+    # only emits a generic "was missed" line) so we can see *why* a job skipped.
+    sched.add_listener(
+        _on_scheduler_event,
+        EVENT_JOB_MISSED | EVENT_JOB_ERROR | EVENT_JOB_EXECUTED,
+    )
     _scheduler = sched
     sched.start()
     logger.info("scheduler started")

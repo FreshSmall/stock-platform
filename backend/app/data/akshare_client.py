@@ -14,19 +14,38 @@ Note: ``日期`` is returned as a Python ``str`` ('YYYY-MM-DD'), NOT a Timestamp
 """
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import date, datetime, time as dtime
 from typing import Any
 
 import akshare as ak
+import requests
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
 )
 
+# Import for the SIDE EFFECT: config neutralizes the machine's proxy config
+# (env vars + ``no_proxy`` for the macOS system proxy) before any request is
+# made. Without this, scripts that import only this module would let akshare's
+# internal requests hit the local proxy, which refuses finance hosts.
+from app.core import config  # noqa: F401
+
 logger = logging.getLogger(__name__)
+
+# Shared session for the app's OWN HTTP fetches (Tencent kline endpoints).
+# ``trust_env=False`` keeps requests off the machine's proxy configuration —
+# both env vars and (on macOS) the system proxy that urllib discovers via
+# SystemConfiguration. Observed 2026-08-14/16: a local Clash proxy refused
+# connections to the finance hosts mid-run, killing a whole daily-K sync.
+# akshare-internal calls can't take a session, they rely on the ``no_proxy``
+# env default set in app.core.config instead.
+_http = requests.Session()
+_http.trust_env = False
+_http.headers.update({"User-Agent": "Mozilla/5.0"})
 
 # ---------------------------------------------------------------------------
 # Hard wall-clock timeout guard for akshare (which uses ``requests``).
@@ -92,14 +111,23 @@ def fetch_daily_quotes(
 ) -> list[dict]:
     """Fetch daily OHLCV for one A-share symbol.
 
-    Primary source: akshare (``stock_zh_a_hist`` → eastmoney). On repeated
-    failure (eastmoney anti-bot / network), falls back to the Tencent
-    front-adjusted kline source, which is empirically stable where eastmoney
-    is not. The fallback rows carry ``amount=None`` and ``turnover=None``
-    (Tencent does not expose them) and a self-computed ``pct_change``.
+    Primary source: Tencent front-adjusted kline (``web.ifzq.gtimg.cn``).
+    Tencent does not rate-limit by IP and returns in well under a second,
+    making it far more stable than eastmoney from a domestic host. Tencent
+    rows carry ``amount=None`` and ``turnover=None`` (it does not expose
+    them) and a self-computed ``pct_change``.
 
-    An *empty* akshare frame is NOT a failure — it means the symbol genuinely
-    has no bars in the window, so we return ``[]`` without invoking Tencent.
+    Fallback order:
+    1. ``web.ifzq.gtimg.cn`` — primary (fast, stable).
+    2. ``proxy.finance.qq.com`` — same qfq series under an alternate host;
+       serves extended bars with ``amount``/``turnover``. Used when the
+       primary host is WAF-blocking us (observed 2026-08-16 after a request
+       burst: the primary answered 501 challenge pages for ~30 min).
+    3. akshare (``stock_zh_a_hist`` → eastmoney) — covers the STAR-board
+       ``qfq`` codes Tencent sometimes 501s, and fills ``amount``/``turnover``.
+
+    An *empty* result from a source is NOT a failure — it means the symbol
+    has no bars in the window, so we return ``[]`` without trying the next.
 
     :param symbol: 6-digit code, e.g. ``'600519'``.
     :param start_date: ``'YYYYMMDD'`` (inclusive).
@@ -109,8 +137,21 @@ def fetch_daily_quotes(
         ``str`` like ``'2026-07-20'`` (parsed downstream). Empty list if the
         upstream frame was empty.
     """
-    # Primary: akshare (eastmoney). @retry above retries transient blips; if
-    # all 3 attempts fail the exception propagates here and we fall back.
+    # Primary: Tencent (stable, no IP ban, direct-connect works).
+    rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date)
+    if rows:
+        return rows
+    # Same series under an alternate host — bails us out when the primary
+    # host serves WAF challenge pages (burst-triggered, see module docstring).
+    rows = _fetch_daily_quotes_tencent(
+        symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True
+    )
+    if rows:
+        return rows
+    # If Tencent returned [] due to an *error* (not a genuine empty window),
+    # we can't tell here — but trying eastmoney anyway is cheap and gives the
+    # STAR-board qfq codes (which Tencent 501s) a chance. A genuine empty
+    # window will just come back empty again, so no harm.
     try:
         _throttle()
         df = _with_timeout(
@@ -123,15 +164,32 @@ def fetch_daily_quotes(
         )
         if df is None or df.empty:
             return []
-        return _frame_to_rows(symbol, df)
+        logger.info(
+            "tencent empty for %s, used eastmoney (%d rows)",
+            symbol,
+            len(df),
+        )
+        rows = _frame_to_rows(symbol, df)
+        # Degraded-frame guard: eastmoney's soft-ban serves well-formed JSON
+        # with real OHLC but every derived field blank (成交额=0, 涨跌幅
+        # missing — observed 2026-08-17 while IP-blocked). Upserting that
+        # would null out pct_change on already-good rows, so treat an
+        # all-pct-missing frame as garbage.
+        if rows and all(r.get("pct_change") is None for r in rows):
+            logger.warning(
+                "eastmoney frame for %s has no pct_change on any row — "
+                "degraded response, discarding %d rows",
+                symbol, len(rows),
+            )
+            return []
+        return rows
     except Exception as e:
         logger.warning(
-            "akshare failed for %s, falling back to Tencent: %s",
+            "eastmoney fallback failed for %s: %s",
             symbol,
             e,
         )
-    # Fallback: Tencent (stable, no IP ban).
-    return _fetch_daily_quotes_tencent(symbol, start_date, end_date)
+        return []
 
 
 def _frame_to_rows(symbol: str, df) -> list[dict]:
@@ -140,6 +198,12 @@ def _frame_to_rows(symbol: str, df) -> list[dict]:
     Shared by the akshare primary path so the fallback does not duplicate the
     column mapping. Expects akshare 1.18.80 column names
     (``日期/开盘/收盘/最高/最低/成交量/成交额/涨跌幅/换手率``).
+
+    Volume unit normalization: akshare (eastmoney) ``成交量`` is in **股**
+    (shares), while the Tencent primary source returns **手** (1 手 = 100 股).
+    We normalize everything to 手 here so both sources land in the same unit —
+    matching A-share quoting convention (行情软件普遍以手展示成交量).
+    See :func:`_shares_to_lots` for the divisor.
     """
     out: list[dict] = []
     for _, row in df.iterrows():
@@ -151,7 +215,7 @@ def _frame_to_rows(symbol: str, df) -> list[dict]:
                 "close": _to_float(row.get("收盘")),
                 "high": _to_float(row.get("最高")),
                 "low": _to_float(row.get("最低")),
-                "volume": _to_int(row.get("成交量")),
+                "volume": _shares_to_lots(row.get("成交量")),
                 "amount": _to_float(row.get("成交额")),
                 "pct_change": _to_float(row.get("涨跌幅")),
                 "turnover": _to_float(row.get("换手率")),
@@ -160,10 +224,40 @@ def _frame_to_rows(symbol: str, df) -> list[dict]:
     return out
 
 
-# Tencent front-adjusted daily kline — the eastmoney anti-bot fallback.
-# Ported from Vibe-Research's ``_kline_tencent``; Tencent does not rate-limit
-# by IP and returns in well under a second, making it a reliable secondary.
+def _shares_to_lots(v: Any) -> int | None:
+    """Convert an eastmoney ``成交量`` (股 / shares) value to 手 (lots).
+
+    eastmoney reports volume in shares; the Tencent primary source reports it
+    in 手 (1 手 = 100 股). Normalizing eastmoney to 手 here keeps the two
+    sources consistent in the canonical schema (verified live 2026-08-13:
+    601398 amount/volume ≈ close ⇒ eastmoney volume is per-share; Tencent
+    realtime quote part[6] is the same day's volume in 手).
+
+    Returns ``None`` when the input is missing. Round-trips through float so a
+    decimal string like ``'580823797.0'`` doesn't trip ``int()``.
+    """
+    shares = _to_float(v)
+    if shares is None:
+        return None
+    return int(shares / 100)
+
+
+# Tencent front-adjusted daily kline — the PRIMARY source. Tencent does not
+# rate-limit by IP and returns in well under a second, and (unlike eastmoney)
+# its direct connection is not anti-bot-blocked from a domestic host, making it
+# the most reliable choice. ``fetch_daily_quotes`` falls back to the alternate
+# Tencent host and then eastmoney when it returns nothing (e.g. its 501 for
+# some STAR-board qfq codes).
+# Ported from Vibe-Research's ``_kline_tencent``.
 _TENCENT_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+# Alternate host for the same qfq series. Different WAF posture: kept as a
+# fallback for when the primary host starts serving 501 challenge pages
+# (observed 2026-08-16 after a ~2000-request burst; lasted ~30+ min). Its
+# bars carry two extra trailing fields (turnover, amount) — see
+# ``_fetch_daily_quotes_tencent(extended=True)``.
+_TENCENT_KLINE_ALT = (
+    "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+)
 
 
 def _tencent_prefix(code: str) -> str:
@@ -184,23 +278,32 @@ def _tencent_prefix(code: str) -> str:
 
 
 def _fetch_daily_quotes_tencent(
-    symbol: str, start_date: str, end_date: str
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    url: str = _TENCENT_KLINE,
+    extended: bool = False,
 ) -> list[dict]:
-    """Tencent front-adjusted daily kline fallback for one A-share symbol.
+    """Tencent front-adjusted daily kline for one A-share symbol.
+
+    :param url: which Tencent host to query (primary or the alternate,
+        see :data:`_TENCENT_KLINE_ALT`).
+    :param extended: parse the alternate host's two extra trailing bar
+        fields — ``[7]`` turnover-rate (%) and ``[8]`` turnover-amount in
+        万元 (converted here to 元). The primary host's 6-field bars leave
+        them ``None``.
 
     Tencent serves "the most recent *N* bars" rather than a date range, so we
     estimate *N* from the requested window (calendar-day span + a buffer for
-    holidays/weekends, capped at 400) and filter to ``[start_date, end_date]``
-    on the client side.
+    holidays/weekends) and filter to ``[start_date, end_date]`` on the client
+    side.
 
-    Returns rows with the same schema as :func:`fetch_daily_quotes`, except:
-    * ``amount`` and ``turnover`` are ``None`` (Tencent does not expose them).
-    * ``pct_change`` is computed from consecutive closes (Tencent omits it).
+    Returns rows with the same schema as :func:`fetch_daily_quotes`, except
+    ``amount`` and ``turnover`` are ``None`` unless ``extended``.
 
     On any error returns ``[]`` — the caller will record the code as failed so
     the 23:00 retry can pick it up.
     """
-    import requests
     from datetime import datetime
 
     # Estimate how many bars cover the window. Trading days ≈ 5/7 of calendar
@@ -216,10 +319,9 @@ def _fetch_daily_quotes_tencent(
 
     sym = f"{_tencent_prefix(symbol)}{symbol}"
     try:
-        r = requests.get(
-            _TENCENT_KLINE,
+        r = _http.get(
+            url,
             params={"param": f"{sym},day,,,{n},qfq"},
-            headers={"User-Agent": "Mozilla/5.0"},
             timeout=12,
         )
         r.raise_for_status()
@@ -251,6 +353,14 @@ def _fetch_daily_quotes_tencent(
         pct = None
         if prev_close and close:
             pct = round((close - prev_close) / prev_close * 100, 4)
+        amount = None
+        turnover = None
+        if extended:
+            # Alternate-host bars: [7]=turnover-rate %, [8]=amount in 万元.
+            turnover = _to_float(it[7]) if len(it) > 7 and it[7] else None
+            raw_amt = _to_float(it[8]) if len(it) > 8 and it[8] else None
+            if raw_amt is not None:
+                amount = round(raw_amt * 10000, 2)
         out.append(
             {
                 "stock_code": symbol,
@@ -263,12 +373,146 @@ def _fetch_daily_quotes_tencent(
                 # '1061011.000'; _to_int would reject the decimal point, so
                 # round-trip through float first.
                 "volume": int(v) if (v := _to_float(it[5])) is not None else None,
-                "amount": None,  # Tencent does not expose turnover-amount
+                "amount": amount,  # only the alternate host exposes it
                 "pct_change": pct,
-                "turnover": None,  # Tencent does not expose turnover-rate
+                "turnover": turnover,  # only the alternate host exposes it
             }
         )
         prev_close = close
+    return out
+
+
+def fetch_spot_table() -> list[dict]:
+    """Whole-market spot snapshot — the full A-share list in ONE logical fetch.
+
+    Primary: akshare ``stock_zh_a_spot_em`` (eastmoney), ~4200 rows in a
+    single request. Fallback: Tencent's paginated board-rank API (~4200 rows
+    over ~22 requests of 200) — added because eastmoney IP-bans this host
+    class for hours after a burst (observed 2026-08-16), and the universe
+    refresh must not be single-homed on it.
+
+    Columns returned (canonical keys): ``stock_code, stock_name, close,
+    pct_change, turnover, pe, pb, total_mv, circ_mv`` — market values in
+    亿元 (the ``stock_pool`` convention). Suspended stocks carry NaN/missing
+    cells → ``None``. ``pb`` is ``None`` on the Tencent source (it does not
+    expose book value).
+
+    :return: list of dicts, ``[]`` when both sources fail.
+    """
+    rows = _fetch_spot_table_eastmoney()
+    if rows:
+        return rows
+    logger.warning("spot table: eastmoney empty/failed, trying tencent rank")
+    rows = _fetch_spot_table_tencent()
+    if rows:
+        return rows
+    return []
+
+
+def _mv_yuan_to_yi(v) -> float | None:
+    """元 (eastmoney mv unit) → 亿元 (the stock_pool convention)."""
+    f = _to_float(v)
+    return f / 1e8 if f is not None else None
+
+
+def _fetch_spot_table_eastmoney() -> list[dict]:
+    """Eastmoney whole-market spot via ``ak.stock_zh_a_spot_em``.
+
+    Columns used (akshare 1.18.80): 代码, 名称, 最新价, 涨跌幅, 换手率,
+    市盈率-动态, 市净率, 总市值, 流通市值.
+    """
+    try:
+        _throttle()
+        df = _with_timeout(ak.stock_zh_a_spot_em)
+    except Exception as e:  # noqa: BLE001 - any failure → fall back to tencent
+        logger.warning("eastmoney spot table failed: %s", e)
+        return []
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).strip()
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        name = row.get("名称")
+        out.append(
+            {
+                "stock_code": code,
+                "stock_name": name if isinstance(name, str) else None,
+                "close": _to_float(row.get("最新价")),
+                "pct_change": _to_float(row.get("涨跌幅")),
+                "turnover": _to_float(row.get("换手率")),
+                "pe": _to_float(row.get("市盈率-动态")),
+                "pb": _to_float(row.get("市净率")),
+                "total_mv": _mv_yuan_to_yi(row.get("总市值")),
+                "circ_mv": _mv_yuan_to_yi(row.get("流通市值")),
+            }
+        )
+    return out
+
+
+# Tencent board-rank endpoint (same proxy.finance.qq.com host as the alt
+# daily-K source). Serves the whole A-share market paginated; field names
+# verified live 2026-08-17 against known closes.
+_TENCENT_RANK = "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList"
+
+
+def _fetch_spot_table_tencent(
+    board: str = "aStock", page_size: int = 200, max_rows: int = 7000
+) -> list[dict]:
+    """Tencent whole-market rank as the spot-table fallback.
+
+    Rank fields → canonical keys: ``zxj``→close, ``zdf``→pct_change(%),
+    ``hsl``→turnover(%), ``pe_ttm``→pe, ``ltsz``/``zsz``→circ/total market
+    value (already 亿元, the stock_pool convention). No ``pb``. Codes come
+    prefixed (``sh600519``).
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    offset = 0
+    try:
+        while offset < max_rows:
+            r = _http.get(
+                _TENCENT_RANK,
+                params={
+                    "board_code": board,
+                    "sort_type": "price",
+                    "direct": "down",
+                    "offset": offset,
+                    "count": page_size,
+                },
+                timeout=12,
+            )
+            r.raise_for_status()
+            rank = ((r.json().get("data") or {}).get("rank_list")) or []
+            if not rank:
+                break
+            for it in rank:
+                full = str(it.get("code", ""))
+                code = full[2:] if len(full) == 8 else ""
+                if not re.fullmatch(r"\d{6}", code) or code in seen:
+                    continue
+                if not str(it.get("stock_type", "")).startswith("GP-A"):
+                    continue  # skip funds/bonds/indices riding along
+                seen.add(code)
+                out.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": it.get("name"),
+                        "close": _to_float(it.get("zxj")),
+                        "pct_change": _to_float(it.get("zdf")),
+                        "turnover": _to_float(it.get("hsl")),
+                        "pe": _to_float(it.get("pe_ttm")),
+                        "pb": None,  # not served by this endpoint
+                        "total_mv": _to_float(it.get("zsz")),
+                        "circ_mv": _to_float(it.get("ltsz")),
+                    }
+                )
+            if len(rank) < page_size:
+                break
+            offset += page_size
+    except Exception as e:  # noqa: BLE001 - fallback may fail like the primary
+        logger.warning("tencent rank spot table failed (got %d rows): %s", len(out), e)
     return out
 
 
@@ -308,49 +552,121 @@ def fetch_financial_abstract(symbol: str) -> list[dict]:
 # ============================================================================
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
 def fetch_minute_quotes(symbol: str, period: int = 5) -> list[dict]:
     """Fetch intraday minute OHLCV for one A-share symbol.
 
     :param symbol: 6-digit code, e.g. ``'600519'``.
-    :param period: bar size in minutes; akshare accepts 1/5/15/30/60.
+    :param period: bar size in minutes; accepts 1/5/15/30/60.
     :return: list of dicts with keys ``stock_code, period, trade_date,
         trade_time, open, close, high, low, volume, amount``.
         ``trade_time`` is a ``str`` like ``'2026-07-28 14:30'`` (parsed
-        downstream). Empty list if upstream was empty.
+        downstream). Empty list if upstream was empty. ``amount`` is ``None``
+        when sourced from Tencent (it does not expose turnover-amount).
 
-    Source: ``ak.stock_zh_a_hist_min_em(symbol, period=str(period), adjust='qfq')``.
-    Columns (akshare 1.18.80): ``时间, 开盘, 收盘, 最高, 最低, 成交量, 成交额,
-    最新价``. ``时间`` carries both the date and the minute.
+    Primary source: Tencent minute kline (``ifzq.gtimg.cn/mkline``) — direct
+    connection is not anti-bot-blocked, unlike eastmoney. Falls back to
+    akshare (``stock_zh_a_hist_min_em`` → eastmoney) only when Tencent returns
+    nothing, which also fills the ``amount`` field Tencent omits.
     """
-    _throttle()
-    df = _with_timeout(
-        ak.stock_zh_a_hist_min_em,
-        symbol=symbol,
-        period=str(period),
-        adjust="qfq",
-    )
-    if df is None or df.empty:
+    rows = _fetch_minute_quotes_tencent(symbol, period)
+    if rows:
+        return rows
+    # Fallback: akshare (eastmoney). Fills ``amount`` (Tencent omits it) and
+    # covers any period/edge case Tencent's endpoint doesn't serve.
+    try:
+        _throttle()
+        df = _with_timeout(
+            ak.stock_zh_a_hist_min_em,
+            symbol=symbol,
+            period=str(period),
+            adjust="qfq",
+        )
+        if df is None or df.empty:
+            return []
+        logger.info(
+            "tencent minute empty for %s/%dmin, used eastmoney (%d rows)",
+            symbol, period, len(df),
+        )
+        out: list[dict] = []
+        for _, row in df.iterrows():
+            trade_time = str(row.get("时间", ""))
+            out.append(
+                {
+                    "stock_code": symbol,
+                    "period": period,
+                    "trade_time": trade_time,
+                    "trade_date": _trade_date_from_time(trade_time),
+                    "open": _to_float(row.get("开盘")),
+                    "close": _to_float(row.get("收盘")),
+                    "high": _to_float(row.get("最高")),
+                    "low": _to_float(row.get("最低")),
+                    # eastmoney 成交量 is in 股; normalize to 手 to match
+                    # the Tencent primary path. See _shares_to_lots.
+                    "volume": _shares_to_lots(row.get("成交量")),
+                    "amount": _to_float(row.get("成交额")),
+                }
+            )
+        return out
+    except Exception as e:
+        logger.warning("eastmoney minute fallback failed for %s: %s", symbol, e)
         return []
+
+
+def _fetch_minute_quotes_tencent(
+    symbol: str, period: int
+) -> list[dict]:
+    """Tencent minute kline for one A-share symbol.
+
+    Tencent's mkline endpoint serves "the most recent *N* bars" for a given
+    period; it does not take a date range, so we request the latest ~320 bars
+    (a couple of trading days) and return all of them. Each bar is
+    ``[YYYYMMDDHHMM, open, close, high, low, volume, {}, turnover]``.
+
+    Returns rows with the same schema as :func:`fetch_minute_quotes`, except
+    ``amount`` is ``None`` (Tencent does not expose turnover-amount). On any
+    error returns ``[]`` so the caller falls back to eastmoney.
+    """
+    # Tencent period codes mirror the bar size directly: m1/m5/m15/m30/m60.
+    _TENCENT_MINUTE_KLINE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
+    sym = f"{_tencent_prefix(symbol)}{symbol}"
+    try:
+        r = _http.get(
+            _TENCENT_MINUTE_KLINE,
+            params={"param": f"{sym},m{period},,320"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = (r.json().get("data") or {}).get(sym) or {}
+    except Exception as e:  # noqa: BLE001 - any failure → empty, fall back
+        logger.warning("tencent minute failed for %s: %s", symbol, e)
+        return []
+
+    # Bar key is ``m<period>`` (e.g. ``m5``); ``prec``/``qt`` are metadata.
+    raw = data.get(f"m{period}") or []
     out: list[dict] = []
-    for _, row in df.iterrows():
-        trade_time = str(row.get("时间", ""))
+    for it in raw:
+        if not isinstance(it, list) or len(it) < 6:
+            continue
+        # ``202607291405`` → trade_date '2026-07-29', trade_time '2026-07-29 14:05'
+        compact = str(it[0])
+        if len(compact) < 12:
+            continue
+        trade_date = f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}"
+        trade_time = f"{trade_date} {compact[8:10]}:{compact[10:12]}"
         out.append(
             {
                 "stock_code": symbol,
                 "period": period,
                 "trade_time": trade_time,
-                "trade_date": _trade_date_from_time(trade_time),
-                "open": _to_float(row.get("开盘")),
-                "close": _to_float(row.get("收盘")),
-                "high": _to_float(row.get("最高")),
-                "low": _to_float(row.get("最低")),
-                "volume": _to_int(row.get("成交量")),
-                "amount": _to_float(row.get("成交额")),
+                "trade_date": trade_date,
+                "open": _to_float(it[1]),
+                "close": _to_float(it[2]),
+                "high": _to_float(it[3]),
+                "low": _to_float(it[4]),
+                # Tencent returns volume as a numeric string; round-trip via
+                # float so the decimal point doesn't trip _to_int.
+                "volume": int(v) if (v := _to_float(it[5])) is not None else None,
+                "amount": None,  # Tencent does not expose turnover-amount
             }
         )
     return out
@@ -544,47 +860,61 @@ def fetch_sector_list(sector_type: str = "industry") -> list[dict]:
     return out
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
 def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
-    """Fetch daily index history via the Tencent source (避开 push2 反爬).
+    """Fetch daily index history via the Tencent ``web.ifzq.gtimg.cn`` source.
 
     :param symbol: exchange-prefixed code, e.g. ``'sh000001'`` (上证指数),
         ``'sz399001'`` (深证成指), ``'sz399006'`` (创业板指).
     :param index_name: display name stored alongside.
     :return: list of dicts (index_code, index_name, trade_date, open, close,
         high, low, amount, pct_change). ``pct_change`` is computed here from
-        consecutive closes. Ordered ascending by date.
+        consecutive closes. Ordered ascending by date. Empty list on error.
 
-    Source: ``ak.stock_zh_index_daily_tx(symbol)`` — the Tencent endpoint,
-    which is stable where the eastmoney ``push2*`` endpoints are not. Verified
-    columns (akshare 1.18.80, live): ``date, open, close, high, low, amount``.
+    Source: the same ``web.ifzq.gtimg.cn/appstock/app/fqkline/get`` endpoint
+    used for individual stocks — it also serves indices and is direct-connect
+    stable (unlike ``proxy.finance.qq.com`` that akshare's
+    ``stock_zh_index_daily_tx`` uses, which SSL-fails through a proxy and
+    pulls the full history year-by-year, slowly and unreliably).
+
+    Each Tencent bar is ``[date, open, close, high, low, volume, {}, amount]``
+    (verified live 2026-08-06 for sh000001/sz399001/sz399006).
     """
-    _throttle()
-    df = _with_timeout(ak.stock_zh_index_daily_tx, symbol=symbol)
-    if df is None or df.empty:
+    _TENCENT_INDEX_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    try:
+        r = _http.get(
+            _TENCENT_INDEX_KLINE,
+            params={"param": f"{symbol},day,,,800,qfq"},
+            timeout=12,
+        )
+        r.raise_for_status()
+        data = (r.json().get("data") or {}).get(symbol) or {}
+    except Exception as e:  # noqa: BLE001 - any failure → empty, logged upstream
+        logger.warning("tencent index fetch failed for %s: %s", symbol, e)
         return []
-    df = df.sort_values("date").reset_index(drop=True)
+
+    raw = data.get("qfqday") or data.get("day") or []
     out: list[dict] = []
     prev_close: float | None = None
-    for _, row in df.iterrows():
-        close = _to_float(row.get("close"))
+    for it in raw:
+        if not isinstance(it, list) or len(it) < 6:
+            continue
+        d_str = it[0]  # 'YYYY-MM-DD'
+        close = _to_float(it[2])
         pct = None
         if prev_close and close:
             pct = round((close - prev_close) / prev_close * 100, 4)
+        # Tencent index bar: [date, open, close, high, low, volume, {}, amount]
+        amount = _to_float(it[7]) if len(it) > 7 else None
         out.append(
             {
                 "index_code": symbol,
                 "index_name": index_name,
-                "trade_date": _to_date_str(row.get("date"), None),
-                "open": _to_float(row.get("open")),
+                "trade_date": d_str,
+                "open": _to_float(it[1]),
                 "close": close,
-                "high": _to_float(row.get("high")),
-                "low": _to_float(row.get("low")),
-                "amount": _to_float(row.get("amount")),
+                "high": _to_float(it[3]),
+                "low": _to_float(it[4]),
+                "amount": amount,
                 "pct_change": pct,
             }
         )

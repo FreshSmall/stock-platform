@@ -1,7 +1,7 @@
 """Startup gap detection + back-fill for daily-K data.
 
 Problem this solves: the scheduled ``daily_k_sync`` job only fires when the
-backend process is alive at 16:30 on a trading day. If the host was asleep /
+backend process is alive at 17:30 on a trading day. If the host was asleep /
 off / the service was down, those runs are missed and ``daily_prices`` falls
 behind. This module detects that gap on startup and catches up.
 
@@ -12,10 +12,17 @@ It does NOT depend on the scheduler being accurate — it runs once at startup
 Trading-day awareness: A-share market trades Mon-Fri. We treat weekdays as
 candidate trading days; holidays are tolerated because the per-stock sync is a
 no-op when the upstream has no bar for that date (akshare returns empty).
+
+Completeness awareness: a day counts as settled only when its settled-row
+count is within :data:`_COMPLETENESS_RATIO` of the recent baseline. A partial
+run (e.g. 2026-08-14: 17:30 sync died after ~1500 of ~4200 codes) leaves
+settled bars on the latest date, which used to fool ``MAX(trade_date)``-only
+gap detection into "already up to date" — the partial day is now re-synced
+like any other gap (the upsert is idempotent).
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,6 +35,20 @@ logger = logging.getLogger(__name__)
 # if the gap looks huge (e.g. a fresh DB would otherwise try years). The daily-K
 # source only serves recent history cheaply anyway.
 MAX_BACKFILL_DAYS = 30
+
+# A settled day is "incomplete" when its settled-row count falls below this
+# fraction of the recent baseline (the max settled count over the last few
+# dates). Market-wide day-over-day drift is a few ‰ (listings/suspensions), so
+# 0.9 cleanly separates "a sync run died halfway" (observed 37%) from noise.
+_COMPLETENESS_RATIO = 0.9
+
+# "Today" only participates in gap detection from this local hour on — before
+# the session settles there is nothing to fetch, and re-syncing would upsert
+# half-day bars. The main scheduled sync runs at 17:30.
+_TODAY_ELIGIBLE_HOUR = 17
+
+# How many recent dates to look at when computing the completeness baseline.
+_COUNT_WINDOW = 15
 
 
 def latest_complete_trade_date(db: Session) -> date | None:
@@ -46,18 +67,48 @@ def latest_complete_trade_date(db: Session) -> date | None:
     ).scalar()
 
 
-def detect_gap(db: Session, today: date | None = None) -> list[date]:
+def settled_counts(db: Session, limit: int = _COUNT_WINDOW) -> dict[date, int]:
+    """Settled row counts (``pct_change`` non-NULL) for the recent dates.
+
+    :return: ``{trade_date: row_count}`` for the ``limit`` most recent dates
+        that have settled bars, ascending order irrelevant (dict).
+    """
+    from app.models.stock import DailyPrice
+
+    rows = db.execute(
+        select(DailyPrice.trade_date, func.count())
+        .where(DailyPrice.pct_change.is_not(None))
+        .group_by(DailyPrice.trade_date)
+        .order_by(DailyPrice.trade_date.desc())
+        .limit(limit)
+    ).all()
+    return dict(rows)
+
+
+def detect_gap(
+    db: Session, today: date | None = None, now: datetime | None = None
+) -> list[date]:
     """Return the list of trading days (weekdays) missing from ``daily_prices``.
 
     Compares :func:`latest_complete_trade_date` against ``today`` (default:
-    real today). Returns the weekday dates strictly after the latest complete
-    date and up to (and including) today, capped at :data:`MAX_BACKFILL_DAYS`.
+    real today). The window starts right after the latest complete date —
+    or AT the earliest recent date whose settled-row count is abnormally low
+    (:data:`_COMPLETENESS_RATIO` of the baseline), i.e. a partially-synced
+    day is re-synced. Weekdays strictly after the start and up to the cap are
+    returned, capped at :data:`MAX_BACKFILL_DAYS`.
 
+    "Today" is only included from :data:`_TODAY_ELIGIBLE_HOUR` (17:00) local
+    time on — before the session settles there is nothing to fetch, and an
+    early sync would upsert half-day bars.
+
+    :param today: override the reference date (tests).
+    :param now: override the wall clock for the 17:00 eligibility rule (tests).
     :return: ascending list of dates to back-fill. Empty if already up to date
         or if there is no baseline data yet (caller decides whether to do an
         initial load — back-filling can't infer a start otherwise).
     """
     today = today or date.today()
+    now = now or datetime.now()
     latest = latest_complete_trade_date(db)
     if latest is None:
         # No baseline: nothing to back-fill against. An initial full load is a
@@ -65,9 +116,29 @@ def detect_gap(db: Session, today: date | None = None) -> list[date]:
         logger.info("backfill: no baseline data, skipping gap detection")
         return []
 
+    # Completeness: recent dates at/below ``latest`` whose settled count is
+    # far under the baseline mark a truncated sync run — re-fill from the
+    # earliest such date. Dates after ``latest`` are handled by the forward
+    # window below and don't participate.
+    counts = {d: c for d, c in settled_counts(db).items() if d <= latest}
+    start = latest + timedelta(days=1)
+    if counts:
+        baseline = max(counts.values())
+        partial = sorted(
+            d for d, c in counts.items() if c < _COMPLETENESS_RATIO * baseline
+        )
+        if partial:
+            start = partial[0]
+            logger.info(
+                "backfill: %d recent day(s) look partially synced "
+                "(earliest %s: %d rows vs baseline %d)",
+                len(partial), partial[0], counts[partial[0]], baseline,
+            )
+
+    cap = today if now.hour >= _TODAY_ELIGIBLE_HOUR else today - timedelta(days=1)
+    cap = min(cap, latest + timedelta(days=MAX_BACKFILL_DAYS))
     missing: list[date] = []
-    cur = latest + timedelta(days=1)
-    cap = min(today, latest + timedelta(days=MAX_BACKFILL_DAYS))
+    cur = start
     while cur <= cap:
         # weekday(): Mon=0 .. Sun=6 → trading days are 0-4.
         if cur.weekday() < 5:
@@ -140,13 +211,29 @@ def backfill_daily_k(
 
     total = 0
     failures = 0
+    # Circuit-breaker: a burst of consecutive failures usually means the
+    # network/DB is down (observed: macOS port exhaustion, ``Errno 49``).
+    # Continuing to fire 4000+ fetches in that state only makes it worse and
+    # can drag the whole process — including the scheduler — down with it.
+    # Bail out early; the next process restart will retry the same window.
+    consecutive_failures = 0
+    _CIRCUIT_BREAKER = 20
     for code in codes:
         try:
             total += sync_daily.sync_one_stock(db, code, start, end)
+            consecutive_failures = 0
         except Exception as e:  # noqa: BLE001 - per-code resilience
             failures += 1
+            consecutive_failures += 1
             if failures <= 5:
                 logger.error("backfill: sync failed for %s: %s", code, e)
+            if consecutive_failures >= _CIRCUIT_BREAKER:
+                logger.error(
+                    "backfill: %d consecutive failures, aborting run "
+                    "(network/DB likely down) — will retry on next startup",
+                    consecutive_failures,
+                )
+                break
     if failures > 5:
         logger.error("backfill: ...and %d more codes failed", failures - 5)
     logger.info(

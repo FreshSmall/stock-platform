@@ -1,11 +1,13 @@
 """Tests for startup gap detection + back-fill (app.data.backfill).
 
-detect_gap tests mock latest_complete_trade_date so they don't depend on the
-real DB's market-wide max date. backfill_daily_k is DB-backed with the akshare
-client mocked, writing under sentinel codes.
+detect_gap tests mock latest_complete_trade_date (and settled_counts for the
+completeness cases) so they don't depend on the real DB's data. The 17:00
+eligibility rule for "today" is pinned by passing an explicit ``now``.
+backfill_daily_k is DB-backed with the akshare client mocked, writing under
+sentinel codes.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -28,6 +30,16 @@ def _insert_complete(db, code, d):
 
 
 # --- detect_gap (mocked baseline, pure logic) -----------------------------
+#
+# NOTE: every test patches BOTH latest_complete_trade_date and settled_counts.
+# The real shared DB has genuinely truncated days (2026-07-28/29), and the
+# completeness check is supposed to see them — tests that only mock the max
+# date would depend on that live data.
+
+
+def _clean_counts(latest: date, days: int = 3) -> dict[date, int]:
+    """Full-market row counts for the ``days`` dates ending at ``latest``."""
+    return {latest - timedelta(days=i): 4168 for i in range(days)}
 
 
 def test_detect_gap_no_baseline_returns_empty(db_session):
@@ -38,29 +50,93 @@ def test_detect_gap_no_baseline_returns_empty(db_session):
 
 def test_detect_gap_up_to_date_returns_empty(db_session):
     """Latest complete date == today → no gap."""
-    with patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 31)):
-        assert backfill.detect_gap(db_session, today=date(2026, 7, 31)) == []
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 31)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 7, 31))),
+    ):
+        gap = backfill.detect_gap(
+            db_session, today=date(2026, 7, 31), now=datetime(2026, 7, 31, 23, 0)
+        )
+        assert gap == []
 
 
 def test_detect_gap_finds_missing_weekdays(db_session):
     """Latest=Wed 7/29, today=Fri 7/31 → missing Thu 7/30, Fri 7/31."""
-    with patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 29)):
-        gap = backfill.detect_gap(db_session, today=date(2026, 7, 31))
+    evening = datetime(2026, 7, 31, 23, 0)
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 29)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 7, 29))),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 7, 31), now=evening)
         assert gap == [date(2026, 7, 30), date(2026, 7, 31)]
 
 
 def test_detect_gap_skips_weekends(db_session):
     """Latest=Fri 7/24, today=Mon 7/27 → only Mon 7/27 missing (skip Sat/Sun)."""
-    with patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 24)):
-        gap = backfill.detect_gap(db_session, today=date(2026, 7, 27))  # Monday
+    evening = datetime(2026, 7, 27, 23, 0)
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 24)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 7, 24))),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 7, 27), now=evening)  # Monday
         assert gap == [date(2026, 7, 27)]
 
 
 def test_detect_gap_capped_at_max(db_session):
     """A huge gap is capped at MAX_BACKFILL_DAYS."""
-    with patch.object(backfill, "latest_complete_trade_date", return_value=date(2020, 1, 1)):
-        gap = backfill.detect_gap(db_session, today=date(2026, 7, 31))
+    evening = datetime(2026, 7, 31, 23, 0)
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2020, 1, 1)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2020, 1, 1))),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 7, 31), now=evening)
         assert len(gap) <= backfill.MAX_BACKFILL_DAYS
+
+
+def test_detect_gap_excludes_today_before_settlement(db_session):
+    """Before 17:00 "today" is not eligible — an early sync would upsert
+    half-day bars, so the window must stop at yesterday."""
+    morning = datetime(2026, 7, 31, 9, 0)
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 7, 29)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 7, 29))),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 7, 31), now=morning)
+        assert gap == [date(2026, 7, 30)]  # Fri 7/31 excluded
+
+
+def test_detect_gap_includes_partially_synced_latest(db_session):
+    """The 2026-08-14 scenario: latest day has settled bars but only ~37% of
+    the baseline count → it must be re-synced, not treated as complete."""
+    counts = {
+        date(2026, 8, 12): 4167,
+        date(2026, 8, 13): 4168,
+        date(2026, 8, 14): 1546,  # partial — the truncated 17:30 run
+    }
+    evening = datetime(2026, 8, 14, 22, 31)  # the actual restart time
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 8, 14)),
+        patch.object(backfill, "settled_counts", return_value=counts),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 8, 14), now=evening)
+        assert gap == [date(2026, 8, 14)]
+
+
+def test_detect_gap_ignores_small_day_over_day_drift(db_session):
+    """Counts within a few percent of the baseline are normal market drift
+    (listings/suspensions) — those days must NOT be re-synced."""
+    counts = {
+        date(2026, 8, 12): 4160,
+        date(2026, 8, 13): 4168,
+        date(2026, 8, 14): 4162,
+    }
+    evening = datetime(2026, 8, 14, 23, 0)
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 8, 14)),
+        patch.object(backfill, "settled_counts", return_value=counts),
+    ):
+        gap = backfill.detect_gap(db_session, today=date(2026, 8, 14), now=evening)
+        assert gap == []
 
 
 def test_latest_complete_trade_date_ignores_null_pct(db_session):

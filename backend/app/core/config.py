@@ -13,6 +13,15 @@ for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
                    "http_proxy", "https_proxy", "all_proxy"):
     os.environ.pop(_proxy_var, None)
 
+# 清掉环境变量还不够：requests/urllib 在 macOS 上会另读「系统代理」
+# （scutil --proxy，即 Clash 的"系统代理"开关）。本服务访问的全部是
+# 国内数据源/LLM，不需要也不应走代理——本地代理对这些域名大量拒连
+# （2026-08-14/16 两次日K批量同步因此部分失败）。urllib 的
+# proxy_bypass 把 ``no_proxy='*'`` 视为全部绕过，且优先级高于系统代理，
+# 所以这里 setdefault 一个通配（想为个别域名走代理时可覆盖此值）。
+os.environ.setdefault("no_proxy", "*")
+os.environ.setdefault("NO_PROXY", "*")
+
 
 class Settings(BaseSettings):
     """Strongly-typed settings sourced from the environment.

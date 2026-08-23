@@ -1,10 +1,22 @@
 """FastAPI application entrypoint."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
+
+# Configure the root logger so the app's own loggers (``app.scheduler``,
+# ``app.data.*``, etc.) actually emit. uvicorn only configures *its own*
+# loggers by default, so without this every ``logger.info`` in the scheduler /
+# data layer vanishes — which previously made it impossible to tell whether a
+# scheduled job ran. INFO level goes to stdout; uvicorn folds it into its
+# access-log stream.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from app.api.analysis import router as analysis_router
 from app.api.admin import router as admin_router
