@@ -6,28 +6,24 @@ Read market-wide and per-stock sentiment data materialised by V1.5:
 - per-stock limit-up streak from sa_limit_up_streak
 
 These are market-wide signals applied per stock (a hot market lifts all boats),
-except the streak which is per-stock.
+except the streak which is per-stock. Lookups go through the session-scoped
+caches in :mod:`app.factor.cache` (N+1 fix — compute_ic evaluates the same
+market date once per universe code, 300 identical queries otherwise).
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.factor import cache as fcache
 from app.factor.base import Factor, registry
-from app.models.market_data import SaNorthFlow
 from app.models.sentiment import SaLimitUpStreak, SaMarketSentiment
 
 
 def _market_sentiment_on(db: Session, trade_date: date) -> SaMarketSentiment | None:
-    return db.execute(
-        select(SaMarketSentiment)
-        .where(SaMarketSentiment.trade_date <= trade_date)
-        .order_by(SaMarketSentiment.trade_date.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    return fcache.latest_le(fcache.market_sentiment_daily(db), trade_date)
 
 
 class LimitUpCountFactor(Factor):
@@ -74,14 +70,8 @@ class NorthFlowFactor(Factor):
     category = "sentiment"
 
     def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
-        rows = db.execute(
-            select(func.sum(SaNorthFlow.net_buy))
-            .where(SaNorthFlow.trade_date <= trade_date)
-            .group_by(SaNorthFlow.trade_date)
-            .order_by(SaNorthFlow.trade_date.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        return float(rows) if rows is not None else None
+        row = fcache.latest_le(fcache.north_flow_daily(db), trade_date)
+        return float(row.value) if row is not None and row.value is not None else None
 
 
 class StockStreakFactor(Factor):
@@ -92,16 +82,10 @@ class StockStreakFactor(Factor):
     category = "sentiment"
 
     def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
-        row = db.execute(
-            select(SaLimitUpStreak.streak_days)
-            .where(
-                SaLimitUpStreak.stock_code == stock,
-                SaLimitUpStreak.trade_date <= trade_date,
-            )
-            .order_by(SaLimitUpStreak.trade_date.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        return float(row) if row is not None else None
+        row = fcache.latest_le(fcache.streak_rows_for(db, stock), trade_date)
+        if row is None or row.streak_days is None:
+            return None
+        return float(row.streak_days)
 
 
 for _cls in (

@@ -2,10 +2,12 @@
 
 Jobs:
 - ``daily_k_sync``: weekdays 17:30 Asia/Shanghai → incremental daily-K sync.
+  Skipped on non-trading days (weekends/holidays via the trade calendar).
 - ``daily_k_sync_retry``: weekdays 23:00 → if today's row count is far below
   the recent baseline (partial 17:30 run, even across a restart), re-run the
   full sync; otherwise retry only the codes that failed in the 17:30 run.
-  Skipped (no-op) when the 17:30 run had zero failures.
+  Skipped (no-op) when the 17:30 run had zero failures, and on non-trading
+  days (a zero count is expected there, not a partial run).
 
 The scheduler is NOT started on import (that would create side effects and
 background threads during tests / collection). Call :func:`init_scheduler`
@@ -55,6 +57,48 @@ _scheduler: BackgroundScheduler | None = None
 # Look-back window for the incremental pull.
 _LOOKBACK_DAYS = 7
 
+# Cached A-share trading calendar (set of dates), loaded once per process.
+# ``None`` means "not loaded / load failed" — callers then fall back to the
+# weekday-only judgment. A calendar miss only wastes one sync run, while
+# wrongly skipping a real trading day would lose a day of data.
+_trade_cal: set[date] | None = None
+_trade_cal_loaded = False
+
+
+def _load_trade_calendar() -> set[date] | None:
+    """Load the trading calendar once per process via akshare/sina.
+
+    Kept lazy and failure-tolerant: a network hiccup at load time leaves
+    ``_trade_cal`` as ``None`` and the callers degrade to weekday-only.
+    """
+    global _trade_cal, _trade_cal_loaded
+    if _trade_cal_loaded:
+        return _trade_cal
+    _trade_cal_loaded = True
+    try:
+        from app.data.akshare_client import fetch_trade_calendar
+
+        _trade_cal = set(fetch_trade_calendar())
+        logger.info("trade calendar loaded: %d dates", len(_trade_cal))
+    except Exception as e:  # noqa: BLE001 - calendar is an optimization, not a requirement
+        logger.warning("trade calendar unavailable (%s); weekday-only judgment", e)
+    return _trade_cal
+
+
+def _is_trade_day(d: date) -> bool:
+    """Whether ``d`` is an A-share trading day.
+
+    Weekends are always False. Holidays (non-trading weekdays) are False only
+    when the calendar loaded — on calendar failure weekdays optimistically
+    count as trading days (see :func:`_load_trade_calendar` for the tradeoff).
+    """
+    if d.weekday() >= 5:
+        return False
+    cal = _load_trade_calendar()
+    if cal is None:
+        return True
+    return d in cal
+
 # Codes that failed in the 17:30 main run, replayed by the 23:00 retry job.
 # Process-local state — a restart clears it, which is safe: with no failure
 # record the retry is a no-op and the next 17:30 run still covers everything.
@@ -95,6 +139,16 @@ def run_daily_sync() -> None:
     # import time) and avoid a circular ref with app.core.database.
     from app.core.database import SessionLocal
     from app.models.stock import StockPool
+
+    # Non-trading days (weekend/holiday) have nothing to pull; a full-market
+    # run would only burn WAF goodwill against the kline hosts. Observed
+    # 2026-08-29: the weekend retry misfired into a pointless full sync that
+    # stacked on the startup backfill and accelerated the 501 ban.
+    today = date.today()
+    if not _is_trade_day(today):
+        logger.info("daily sync skipped: %s is not a trading day", today)
+        _last_run_failed_codes = []
+        return
 
     logger.info("daily sync job started (full market)")
     db = SessionLocal()
@@ -144,9 +198,9 @@ def _today_looks_incomplete() -> bool:
     under-filled, and that is visible in the data itself.
 
     Returns False when there is nothing to compare against (no prior settled
-    days). On a weekday holiday this reports True and the retry fires a full
-    sync that writes nothing — the same waste the 17:30 job already incurs
-    on holidays, accepted for simplicity.
+    days), and False on non-trading days (weekend/holiday: a zero row count
+    is the expected outcome there, not a partial run — observed 2026-08-29
+    misfiring a full weekend sync that only fed the WAF).
     """
     from app.core.database import SessionLocal
     from app.data.backfill import _COMPLETENESS_RATIO, settled_counts
@@ -154,6 +208,8 @@ def _today_looks_incomplete() -> bool:
     db = SessionLocal()
     try:
         today = date.today()
+        if not _is_trade_day(today):
+            return False
         counts = settled_counts(db)
         today_count = counts.get(today, 0)
         prior = [c for d, c in counts.items() if d < today]
@@ -255,6 +311,26 @@ def init_scheduler() -> BackgroundScheduler:
         run_daily_sync_retry,
         CronTrigger(hour=23, minute=0, day_of_week="mon-fri"),
         id="daily_k_sync_retry",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    # Finance extras (roe/eps/growth) — uncapped fill/refresh, ~0.7s per
+    # stock; first run ≈ 1h for the full market, then only new listings plus
+    # a 200-code/day refresh rotation. Direct (not admin-wrapped) because the
+    # full fill exceeds the admin task's 300s deadline.
+    def _finance_sync_job() -> None:
+        from app.data.sync_finance import run_finance_sync
+
+        try:
+            run_finance_sync()
+        except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
+            logger.exception("finance sync job failed")
+
+    sched.add_job(
+        _finance_sync_job,
+        CronTrigger(hour=19, minute=30, day_of_week="mon-fri"),
+        id="finance_sync",
         replace_existing=True,
         coalesce=True,
         misfire_grace_time=600,

@@ -14,7 +14,9 @@ Note: ``日期`` is returned as a Python ``str`` ('YYYY-MM-DD'), NOT a Timestamp
 """
 
 import logging
+import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import date, datetime, time as dtime
@@ -46,6 +48,92 @@ logger = logging.getLogger(__name__)
 _http = requests.Session()
 _http.trust_env = False
 _http.headers.update({"User-Agent": "Mozilla/5.0"})
+
+# ---------------------------------------------------------------------------
+# Tencent-request pacing & WAF cooldown.
+#
+# Observed 2026-08-26..29: the classic ``web.ifzq.gtimg.cn`` WAF serves 501
+# challenge pages once per-stock polling accumulates ~700 requests at ~5 QPS
+# (≈2.5 min into a full-market sync), and the ban holds for the rest of the
+# day. Three defenses, all centralized in :func:`_tencent_get`:
+#
+# 1. Pacing — every Tencent-host request waits ≥0.25s + jitter after the
+#    previous one, stretching a full-market sync to ~30 min so the burst
+#    pattern that trips the WAF never forms.
+# 2. Per-host cooldown — a 501 marks that host untouchable for 5 minutes;
+#    calls during the cooldown return ``None`` without touching the network,
+#    so the caller immediately falls through to the next source instead of
+#    hammering a host that is already annoyed.
+# 3. Session rebuild on 501 — fresh connection pool + rotated User-Agent,
+#    dropping whatever cookie/connection state the WAF may have fingerprinted.
+# ---------------------------------------------------------------------------
+from urllib.parse import urlparse  # noqa: E402
+
+_TENCENT_MIN_INTERVAL_SEC = 0.25
+_TENCENT_JITTER_SEC = 0.25
+_TENCENT_WAF_COOLDOWN_SEC = 300.0
+_tencent_last_ts = 0.0
+_waf_cooldown_until: dict[str, float] = {}
+_tencent_pace_lock = threading.Lock()
+
+# Small UA pool rotated on every session rebuild; all look like ordinary
+# browsers (an empty/bot UA is itself a risk signal for these hosts).
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0 Safari/537.36",
+]
+_ua_idx = 0
+
+
+def _reset_http_session() -> None:
+    """Rebuild the shared session after a WAF 501 (new pool, rotated UA)."""
+    global _http, _ua_idx
+    _ua_idx = (_ua_idx + 1) % len(_USER_AGENTS)
+    _http = requests.Session()
+    _http.trust_env = False
+    _http.headers.update({"User-Agent": _USER_AGENTS[_ua_idx]})
+    logger.info("rebuilt http session with UA #%d after tencent 501", _ua_idx)
+
+
+def _tencent_get(url: str, params: dict, timeout: float = 12):
+    """Rate-limited GET for any Tencent finance host.
+
+    :return: the ``Response`` on HTTP 2xx, or ``None`` when the host is in
+        WAF cooldown, returned 501, or the request failed (logged). ``None``
+        is the caller's cue to try its next source — it does NOT mean the
+        symbol genuinely has no data.
+    """
+    global _tencent_last_ts
+    host = urlparse(url).netloc
+    with _tencent_pace_lock:
+        if time.time() < _waf_cooldown_until.get(host, 0.0):
+            return None
+        now = time.time()
+        wait = (
+            _TENCENT_MIN_INTERVAL_SEC
+            + random.uniform(0, _TENCENT_JITTER_SEC)
+            - (now - _tencent_last_ts)
+        )
+        if wait > 0:
+            time.sleep(wait)
+        _tencent_last_ts = time.time()
+    try:
+        r = _http.get(url, params=params, timeout=timeout)
+        if r.status_code == 501:
+            _waf_cooldown_until[host] = time.time() + _TENCENT_WAF_COOLDOWN_SEC
+            _reset_http_session()
+            logger.warning(
+                "tencent 501 challenge from %s — host cooling down %.0fs",
+                host, _TENCENT_WAF_COOLDOWN_SEC,
+            )
+            return None
+        r.raise_for_status()
+        return r
+    except Exception as e:  # noqa: BLE001 - any failure → None, next source
+        logger.warning("tencent request failed (%s): %s", host, e)
+        return None
 
 # ---------------------------------------------------------------------------
 # Hard wall-clock timeout guard for akshare (which uses ``requests``).
@@ -111,18 +199,19 @@ def fetch_daily_quotes(
 ) -> list[dict]:
     """Fetch daily OHLCV for one A-share symbol.
 
-    Primary source: Tencent front-adjusted kline (``web.ifzq.gtimg.cn``).
-    Tencent does not rate-limit by IP and returns in well under a second,
-    making it far more stable than eastmoney from a domestic host. Tencent
-    rows carry ``amount=None`` and ``turnover=None`` (it does not expose
-    them) and a self-computed ``pct_change``.
+    Primary source: the alternate Tencent host ``proxy.finance.qq.com``
+    (same qfq series). Promoted 2026-08-30: since 2026-08-26 the classic
+    ``web.ifzq.gtimg.cn`` WAF 501-bans sustained per-stock polling (see
+    :func:`_tencent_get`), while this host kept serving through the whole
+    2026-08-29 catch-up run (45910 rows, 0 failures). Its bars also carry
+    ``amount``/``turnover`` (the classic host serves neither).
 
     Fallback order:
-    1. ``web.ifzq.gtimg.cn`` — primary (fast, stable).
-    2. ``proxy.finance.qq.com`` — same qfq series under an alternate host;
-       serves extended bars with ``amount``/``turnover``. Used when the
-       primary host is WAF-blocking us (observed 2026-08-16 after a request
-       burst: the primary answered 501 challenge pages for ~30 min).
+    1. ``proxy.finance.qq.com`` — primary (WAF-tolerant so far, extended
+       bars with ``amount``/``turnover``).
+    2. ``web.ifzq.gtimg.cn`` — the classic host; 6-field bars, no
+       ``amount``/``turnover``. Serves as a second opinion when the primary
+       is cooling down (its WAF posture is independent).
     3. akshare (``stock_zh_a_hist`` → eastmoney) — covers the STAR-board
        ``qfq`` codes Tencent sometimes 501s, and fills ``amount``/``turnover``.
 
@@ -142,16 +231,17 @@ def fetch_daily_quotes(
         ``str`` like ``'2026-07-20'`` (parsed downstream). Empty list if the
         upstream frame was empty.
     """
-    # Primary: Tencent (stable, no IP ban, direct-connect works).
-    rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date, max_bars=max_bars)
-    if rows:
-        return rows
-    # Same series under an alternate host — bails us out when the primary
-    # host serves WAF challenge pages (burst-triggered, see module docstring).
+    # Primary: alternate Tencent host — WAF-tolerant, extended bars. See the
+    # docstring for why this leads since 2026-08-30.
     rows = _fetch_daily_quotes_tencent(
         symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True,
         max_bars=max_bars,
     )
+    if rows:
+        return rows
+    # Secondary: the classic ifzq host (independent WAF posture, 6-field
+    # bars without amount/turnover).
+    rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date, max_bars=max_bars)
     if rows:
         return rows
     # If Tencent returned [] due to an *error* (not a genuine empty window),
@@ -248,19 +338,15 @@ def _shares_to_lots(v: Any) -> int | None:
     return int(shares / 100)
 
 
-# Tencent front-adjusted daily kline — the PRIMARY source. Tencent does not
-# rate-limit by IP and returns in well under a second, and (unlike eastmoney)
-# its direct connection is not anti-bot-blocked from a domestic host, making it
-# the most reliable choice. ``fetch_daily_quotes`` falls back to the alternate
-# Tencent host and then eastmoney when it returns nothing (e.g. its 501 for
-# some STAR-board qfq codes).
-# Ported from Vibe-Research's ``_kline_tencent``.
+# Tencent front-adjusted daily kline. Both hosts serve the same qfq series;
+# all requests go through :func:`_tencent_get` for pacing + 501 cooldown.
+# Secondary host since 2026-08-30: its WAF bans sustained per-stock polling
+# (see the ``_tencent_get`` block for the 2026-08-26..29 incident), and its
+# bars are 6-field (no amount/turnover).
 _TENCENT_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-# Alternate host for the same qfq series. Different WAF posture: kept as a
-# fallback for when the primary host starts serving 501 challenge pages
-# (observed 2026-08-16 after a ~2000-request burst; lasted ~30+ min). Its
-# bars carry two extra trailing fields (turnover, amount) — see
-# ``_fetch_daily_quotes_tencent(extended=True)``.
+# Primary host since 2026-08-30: carried the whole 2026-08-29 catch-up while
+# the classic host was 501-banned, and its bars carry two extra trailing
+# fields (turnover, amount) — see ``_fetch_daily_quotes_tencent(extended=True)``.
 _TENCENT_KLINE_ALT = (
     "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
 )
@@ -336,15 +422,21 @@ def _fetch_daily_quotes_tencent(
     d_start = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
     d_end = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
     try:
-        r = _http.get(
+        r = _tencent_get(
             url,
             params={"param": f"{sym},day,{d_start},{d_end},{n},qfq"},
             timeout=12,
         )
-        r.raise_for_status()
+        if r is None:
+            # Cooldown/501/network failure — caller falls through to the
+            # next source (this is NOT a genuine empty window).
+            return []
         data = (r.json().get("data") or {}).get(sym) or {}
     except Exception as e:  # noqa: BLE001 - any failure → empty, let upstream retry later
-        logger.warning("tencent fallback failed for %s: %s", symbol, e)
+        logger.warning(
+            "tencent kline failed for %s (%s): %s",
+            symbol, urlparse(url).netloc, e,
+        )
         return []
 
     # Tencent field order per bar: [date, open, close, high, low, volume].
@@ -489,7 +581,7 @@ def _fetch_spot_table_tencent(
     offset = 0
     try:
         while offset < max_rows:
-            r = _http.get(
+            r = _tencent_get(
                 _TENCENT_RANK,
                 params={
                     "board_code": board,
@@ -500,7 +592,8 @@ def _fetch_spot_table_tencent(
                 },
                 timeout=12,
             )
-            r.raise_for_status()
+            if r is None:
+                break  # host cooling down / failed mid-pagination
             rank = ((r.json().get("data") or {}).get("rank_list")) or []
             if not rank:
                 break
@@ -546,16 +639,79 @@ def fetch_money_flow(symbol: str) -> list[dict]:
     )
 
 
-def fetch_financial_abstract(symbol: str) -> list[dict]:
-    """Fetch financial abstract (ROE/EPS/growth) for one stock.
+# 只保留最近 N 期报告 —— abstract 接口返回 1990 年代至今约 105 期，研究用不到那么远。
+_FIN_PERIODS = 24
 
-    TODO(B-later): ``stock_financial_abstract`` returns a wide frame with
-    report-period columns that need pivoting. Implement once the target fields
-    (roe, eps, revenue_growth, profit_growth) are mapped. Left as a stub.
+# abstract 指标名 → 规范字段（实测 akshare 1.18.80, 600519, 2026-08-24）：
+# 「常用指标」区含 基本每股收益 / 净资产收益率(ROE)；「成长能力」区含两个增长率。
+_FIN_INDICATOR_MAP = {
+    "基本每股收益": "eps",
+    "净资产收益率(ROE)": "roe",
+    "营业总收入增长率": "revenue_growth",
+    "归属母公司净利润增长率": "profit_growth",
+}
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_financial_abstract(symbol: str) -> list[dict]:
+    """Fetch per-report financial indicators (roe/eps/growth) for one stock.
+
+    Source: ``ak.stock_financial_abstract(symbol)`` — ONE request per symbol
+    (chosen over ``stock_financial_analysis_indicator``, which issues ~29
+    paginated requests per symbol — 133k requests for the full market, an
+    unacceptable ban risk). Wide pivot: ``选项`` (section) + ``指标`` rows,
+    report periods as ``YYYYMMDD`` string columns, values in % for roe and
+    the growth rates, 元 for eps.
+
+    :return: list of dicts ``{stock_code, report_date('YYYY-MM-DD'), roe,
+        eps, revenue_growth, profit_growth}``, ascending by report_date,
+        most recent :data:`_FIN_PERIODS` periods only (the leading — newest —
+        period columns). Empty on failure.
     """
-    raise NotImplementedError(
-        "fetch_financial_abstract: pending schema mapping of stock_financial_abstract"
-    )
+    _throttle()
+    df = _with_timeout(ak.stock_financial_abstract, symbol=symbol)
+    if df is None or df.empty:
+        return []
+
+    # indicator name -> {period_compact: value}; first occurrence wins
+    # (some names repeat across sections — 常用指标 comes first and is the
+    # canonical one).
+    series: dict[str, dict[str, float | None]] = {}
+    for _, row in df.iterrows():
+        name = str(row.get("指标", ""))
+        field = _FIN_INDICATOR_MAP.get(name)
+        if field is None or field in series:
+            continue
+        values: dict[str, float | None] = {}
+        for col in df.columns[2:]:
+            values[str(col)] = _to_float(row.get(col))
+        series[field] = values
+
+    # Period columns are ordered NEWEST-first (verified live: 20260630,
+    # 20260331, ...); take the leading ones.
+    periods = [str(c) for c in df.columns[2:]][:_FIN_PERIODS]
+    out: list[dict] = []
+    for p in periods:
+        report_date = f"{p[:4]}-{p[4:6]}-{p[6:8]}"
+        rec = {
+            "stock_code": symbol,
+            "report_date": report_date,
+            "roe": series.get("roe", {}).get(p),
+            "eps": series.get("eps", {}).get(p),
+            "revenue_growth": series.get("revenue_growth", {}).get(p),
+            "profit_growth": series.get("profit_growth", {}).get(p),
+        }
+        if any(
+            rec[k] is not None
+            for k in ("roe", "eps", "revenue_growth", "profit_growth")
+        ):
+            out.append(rec)
+    out.sort(key=lambda r: r["report_date"])
+    return out
 
 
 # ============================================================================
@@ -647,12 +803,13 @@ def _fetch_minute_quotes_tencent(
     _TENCENT_MINUTE_KLINE = "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
     sym = f"{_tencent_prefix(symbol)}{symbol}"
     try:
-        r = _http.get(
+        r = _tencent_get(
             _TENCENT_MINUTE_KLINE,
             params={"param": f"{sym},m{period},,320"},
             timeout=10,
         )
-        r.raise_for_status()
+        if r is None:
+            return []
         data = (r.json().get("data") or {}).get(sym) or {}
     except Exception as e:  # noqa: BLE001 - any failure → empty, fall back
         logger.warning("tencent minute failed for %s: %s", symbol, e)
@@ -898,12 +1055,13 @@ def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
     """
     _TENCENT_INDEX_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
     try:
-        r = _http.get(
+        r = _tencent_get(
             _TENCENT_INDEX_KLINE,
             params={"param": f"{symbol},day,,,800,qfq"},
             timeout=12,
         )
-        r.raise_for_status()
+        if r is None:
+            return []
         data = (r.json().get("data") or {}).get(symbol) or {}
     except Exception as e:  # noqa: BLE001 - any failure → empty, logged upstream
         logger.warning("tencent index fetch failed for %s: %s", symbol, e)
@@ -936,6 +1094,27 @@ def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
             }
         )
         prev_close = close
+    return out
+
+
+def fetch_trade_calendar() -> list:
+    """A-share trading dates (past and future) via akshare/sina.
+
+    Used by the scheduler to skip weekend/holiday syncs instead of firing a
+    full-market pull that can only write nothing (and only burns WAF
+    goodwill). Values are ``datetime.date``. Raises on failure — callers
+    fall back to the weekday-only judgment.
+    """
+    _throttle()
+    df = _with_timeout(ak.tool_trade_date_hist_sina)
+    out = []
+    for v in df["trade_date"]:
+        if isinstance(v, datetime):
+            out.append(v.date())
+        elif isinstance(v, date):
+            out.append(v)
+        else:
+            out.append(date.fromisoformat(str(v)))
     return out
 
 

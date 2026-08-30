@@ -41,6 +41,7 @@ def _register_runners() -> None:
 
     from app.data import (
         sync_dragon_tiger,
+        sync_finance,
         sync_index,
         sync_industry,
         sync_minute,
@@ -74,6 +75,11 @@ def _register_runners() -> None:
     # One batch ≈ 15 stocks × ~5 chunks ≈ 80s (fits the 300s task deadline).
     _wrap("history_backfill", _history_batch)
     _wrap("history_backfill_reset", lambda db: _hist.reset_failed(db))
+    # Finance sync: one capped batch (~350 codes × 0.7s ≈ 4 min, fits the
+    # deadline); the nightly scheduler job runs the uncapped version.
+    _wrap("finance_sync", lambda db: int(
+        sync_finance.sync_all(db, missing_cap=250, stale_cap=100).get("rows", 0)
+    ))
 
 
 def _run_agent(db, agent_name: str) -> int:

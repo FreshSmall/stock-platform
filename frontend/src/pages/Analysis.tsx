@@ -13,6 +13,7 @@ import {
 } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import ReactMarkdown from 'react-markdown';
 import { getStockInfo } from '../api/stock';
 import {
   getLatestAnalysis,
@@ -25,7 +26,7 @@ import EmptyState from '../components/EmptyState';
 import RiskNotice from '../components/RiskNotice';
 import ScoreRadar from '../components/ScoreRadar';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
 type SectionKey = 'fundamentals' | 'technicals' | 'capital' | 'news' | 'risk';
 
@@ -215,17 +216,17 @@ export default function Analysis() {
             />
           )}
           {streamText && (
-            <Paragraph
+            <div
+              className="assistant-md"
               style={{
-                whiteSpace: 'pre-wrap',
                 background: '#fafafa',
                 padding: 12,
                 borderRadius: 6,
               }}
             >
-              {streamText}
+              <ReactMarkdown>{streamText}</ReactMarkdown>
               {streaming && <span className="blink">▍</span>}
-            </Paragraph>
+            </div>
           )}
           {!result && !streaming && !streamText && (
             <EmptyState description="暂无分析结果，点击「开始分析」生成" />
@@ -242,10 +243,14 @@ export default function Analysis() {
                 label: s.label,
                 children: (
                   <>
-                    <Paragraph style={{ whiteSpace: 'pre-wrap' }}>
-                      {result?.[s.key] || '暂无内容'}
-                    </Paragraph>
-                    <Text type="warning">
+                    {result?.[s.key] ? (
+                      <div className="assistant-md">
+                        <ReactMarkdown>{result[s.key]}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <EmptyState description="暂无内容" />
+                    )}
+                    <Text type="warning" style={{ display: 'block', marginTop: 16 }}>
                       <RiskNotice />
                     </Text>
                   </>

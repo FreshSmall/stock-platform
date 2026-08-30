@@ -1,16 +1,17 @@
 """Fundamental factors (BP-V2-001).
 
 PE/PB/market-cap from stock_pool; ROE/EPS/growth from sa_financial_extra (V1).
-All read pre-computed values — no on-the-fly calculation.
+All read pre-computed values — no on-the-fly calculation. Lookups go through
+the session-scoped caches in :mod:`app.factor.cache` (N+1 fix).
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.factor import cache as fcache
 from app.factor.base import Factor, registry
 from app.models.finance import SaFinancialExtra
 from app.models.stock import StockPool
@@ -18,24 +19,20 @@ from app.models.stock import StockPool
 
 def _pool_field(db: Session, stock: str, trade_date: date, field) -> float | None:
     """Latest stock_pool value for ``field`` on or before ``trade_date``."""
-    row = db.execute(
-        select(field)
-        .where(StockPool.stock_code == stock, StockPool.trade_date <= trade_date)
-        .order_by(StockPool.trade_date.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    return float(row) if row is not None else None
+    row = fcache.latest_le(fcache.pool_rows_for(db, stock), trade_date)
+    if row is None:
+        return None
+    v = getattr(row, field.key)
+    return float(v) if v is not None else None
 
 
 def _fin_field(db: Session, stock: str, field) -> float | None:
-    """Latest sa_financial_extra value for ``field``."""
-    row = db.execute(
-        select(field)
-        .where(SaFinancialExtra.stock_code == stock)
-        .order_by(SaFinancialExtra.report_date.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    return float(row) if row is not None else None
+    """Latest sa_financial_extra value for ``field`` (most recent report)."""
+    rows = fcache.fin_rows_for(db, stock)
+    if not rows:
+        return None
+    v = getattr(rows[-1], field.key)
+    return float(v) if v is not None else None
 
 
 class PeFactor(Factor):

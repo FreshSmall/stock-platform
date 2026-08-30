@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>交易日盘后数据管线 · Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --font-sans:     'Geist', 'PingFang SC', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', 'PingFang SC', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1000px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Flowchart · Daily Pipeline</p>
+    <h1>交易日盘后数据管线 · 因子按需计算</h1>
+
+    <svg viewBox="0 0 900 792" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="daily-pipeline-title daily-pipeline-desc">
+      <title id="daily-pipeline-title">交易日盘后数据管线与因子计算流程</title>
+      <desc id="daily-pipeline-desc">流程图展示交易日盘后管线：16:25 起调度器依次同步股票池与各类盘后数据，17:30 对全市场做日K增量同步；23:00 自愈检查按当日入库量分支——远低于基线则全量重跑，否则仅重放失败代码；数据就绪后因子在用户请求时按需计算，经多因子 z-score 加权打分排名，最终在 Factor 页展示。</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ══ 连接线（先画，压在节点之下）══ -->
+      <line x1="300" y1="76"  x2="300" y2="108" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="300" y1="168" x2="300" y2="198" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="300" y1="258" x2="300" y2="286" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 判断 → 是（全量重跑） -->
+      <line x1="400" y1="336" x2="500" y2="336" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="442" y="316" width="16" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="450" y="325" fill="#7a8399" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">是</text>
+      <!-- 判断 → 否（仅重放失败） -->
+      <line x1="300" y1="386" x2="300" y2="418" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="308" y="400" width="16" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="316" y="409" fill="#7a8399" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace">否</text>
+      <!-- 分支汇合 -->
+      <line x1="300" y1="470" x2="300" y2="492" stroke="#4f5d75" stroke-width="1.2"/>
+      <path d="M 610,364 V 488 Q 610,496 602,496 H 306" fill="none" stroke="#4f5d75" stroke-width="1.2"/>
+      <circle cx="300" cy="496" r="4" fill="#2d3142"/>
+      <line x1="300" y1="500" x2="300" y2="514" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="300" y1="574" x2="300" y2="602" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="300" y1="654" x2="300" y2="682" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ══ 节点（形状即类型）══ -->
+      <!-- N1 开始 -->
+      <rect x="160" y="32" width="280" height="44" rx="20" fill="#f5f5f5"/>
+      <rect x="160" y="32" width="280" height="44" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="50" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">交易日盘后 · 调度启动</text>
+      <text x="300" y="64" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">APScheduler · 16:25</text>
+
+      <!-- N2 盘后数据同步 -->
+      <rect x="160" y="108" width="280" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="160" y="108" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="132" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">盘后数据同步</text>
+      <text x="300" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">16:25 股票池 → 16:35–17:10 指数/情绪/北向/板块</text>
+      <text x="300" y="160" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">18:00 龙虎榜 · 19:30 财务 · 幂等 upsert</text>
+
+      <!-- N3 全市场日K增量同步 -->
+      <rect x="160" y="198" width="280" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="160" y="198" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="222" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">全市场日K增量同步</text>
+      <text x="300" y="238" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">17:30 · akshare 主源 + 腾讯兜底</text>
+      <text x="300" y="250" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">近 7 日增量 → 幂等 upsert → daily_prices</text>
+
+      <!-- N4 判断（焦点） -->
+      <polygon points="300,286 400,336 300,386 200,336" fill="#f5f5f5"/>
+      <polygon points="300,286 400,336 300,386 200,336" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="300" y="330" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">入库行数 ≥ 基线?</text>
+      <text x="300" y="346" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">23:00 · RETRY CHECK</text>
+
+      <!-- N5a 全量重跑 -->
+      <rect x="500" y="308" width="220" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="500" y="308" width="220" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="610" y="330" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">全量重跑日K同步</text>
+      <text x="610" y="346" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">REPLAY FULL MARKET</text>
+
+      <!-- N5b 仅重放失败 -->
+      <rect x="160" y="418" width="280" height="52" rx="6" fill="#f5f5f5"/>
+      <rect x="160" y="418" width="280" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="440" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">仅重放失败代码</text>
+      <text x="300" y="456" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">REPLAY FAILED ONLY</text>
+
+      <!-- N6 因子按需计算 -->
+      <rect x="160" y="514" width="280" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="160" y="514" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="538" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">因子按需计算</text>
+      <text x="300" y="554" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">用户请求触发 · 不做预计算</text>
+      <text x="300" y="566" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">trend·momentum·volume·fundamental·sentiment</text>
+
+      <!-- N7 多因子打分 -->
+      <rect x="160" y="602" width="280" height="52" rx="6" fill="#f5f5f5"/>
+      <rect x="160" y="602" width="280" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="624" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">多因子打分</text>
+      <text x="300" y="640" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">z-score → clip ±3 → 加权 → Top-N</text>
+
+      <!-- N8 结束 -->
+      <rect x="160" y="682" width="280" height="44" rx="20" fill="#f5f5f5"/>
+      <rect x="160" y="682" width="280" height="44" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="700" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'PingFang SC', sans-serif" text-anchor="middle">Factor 页 · 排名展示</text>
+      <text x="300" y="716" fill="#4f5d75" font-size="9" font-family="'Geist Mono', 'PingFang SC', monospace" text-anchor="middle">多因子 TOP-N</text>
+
+      <!-- ══ 图例（底部横条）══ -->
+      <line x1="32" y1="758" x2="868" y2="758" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="32" y="778" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="110" y="768" width="24" height="12" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="142" y="778" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace">开始 / 结束</text>
+      <rect x="250" y="768" width="24" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="282" y="778" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace">处理步骤</text>
+      <polygon points="412,766 424,774 412,782 400,774" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="432" y="778" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace">条件判断 · 焦点</text>
+      <circle cx="558" cy="774" r="4" fill="#2d3142"/>
+      <text x="570" y="778" fill="#4f5d75" font-size="8" font-family="'Geist Mono', 'PingFang SC', monospace">分支汇合</text>
+    </svg>
+  </div>
+</body>
+</html>

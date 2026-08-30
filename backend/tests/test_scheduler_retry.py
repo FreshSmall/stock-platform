@@ -34,8 +34,25 @@ class _FakeDB:
 
 
 def _self_check(rows):
-    with patch("app.core.database.SessionLocal", return_value=_FakeDB(rows)):
+    with (
+        patch("app.core.database.SessionLocal", return_value=_FakeDB(rows)),
+        # The self-check short-circuits to False on non-trading days; the
+        # partial-day scenarios below assume a trading "today" regardless of
+        # when the suite runs.
+        patch.object(scheduler, "_is_trade_day", return_value=True),
+    ):
         return scheduler._today_looks_incomplete()
+
+
+def test_self_check_false_on_non_trade_day():
+    """Weekend/holiday: zero rows is expected, not a partial run."""
+    today = date.today()
+    rows = [(today - timedelta(days=1), 4168), (today, 0)]
+    with (
+        patch("app.core.database.SessionLocal", return_value=_FakeDB(rows)),
+        patch.object(scheduler, "_is_trade_day", return_value=False),
+    ):
+        assert scheduler._today_looks_incomplete() is False
 
 
 def test_self_check_flags_partial_today():

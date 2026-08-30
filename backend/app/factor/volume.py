@@ -8,11 +8,10 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.factor import cache as fcache
 from app.factor.base import Factor, FactorParam, registry
-from app.models.stock import DailyPrice, StockPool
 from app.services import market_service
 
 
@@ -68,13 +67,10 @@ class TurnoverFactor(Factor):
     category = "volume"
 
     def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
-        row = db.execute(
-            select(StockPool.turnover)
-            .where(StockPool.stock_code == stock, StockPool.trade_date <= trade_date)
-            .order_by(StockPool.trade_date.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        return float(row) if row is not None else None
+        row = fcache.latest_le(fcache.pool_rows_for(db, stock), trade_date)
+        if row is None or row.turnover is None:
+            return None
+        return float(row.turnover)
 
 
 class VolPriceFactor(Factor):

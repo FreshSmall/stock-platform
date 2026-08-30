@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Row,
+  Select,
   Skeleton,
   Space,
   Table,
@@ -235,7 +236,7 @@ export default function Factor() {
       </Col>
 
       <Col span={24}>
-        <MultiFactorScoreCard />
+        <MultiFactorScoreCard factors={factorsQ.data ?? []} />
       </Col>
     </Row>
   );
@@ -252,10 +253,20 @@ const seriesColumns: ColumnsType<FactorSeriesPoint> = [
 ];
 
 // Multi-factor weighted scoring panel (POST /factor/score).
-function MultiFactorScoreCard() {
+function MultiFactorScoreCard({ factors: allFactors }: { factors: FactorBrief[] }) {
   const [factors, setFactors] = useState<{ code: string; weight: number }[]>([
     { code: 'pe', weight: 1 },
   ]);
+  const factorOptions = useMemo(
+    () =>
+      CATEGORY_TREE.map((c) => ({
+        label: c.title,
+        options: allFactors
+          .filter((f) => f.category === c.key)
+          .map((f) => ({ value: f.code, label: `${f.name}（${f.code}）` })),
+      })).filter((g) => g.options.length > 0),
+    [allFactors],
+  );
   const [results, setResults] = useState<FactorScoreRow[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -288,13 +299,17 @@ function MultiFactorScoreCard() {
           />
           {factors.map((f, i) => (
             <Space.Compact key={i}>
-              <Input
-                placeholder="因子代码"
-                value={f.code}
-                style={{ width: 120 }}
-                onChange={(e) =>
+              <Select
+                showSearch
+                allowClear
+                placeholder="选择因子"
+                value={f.code || undefined}
+                style={{ minWidth: 200 }}
+                options={factorOptions}
+                optionFilterProp="label"
+                onChange={(v) =>
                   setFactors((prev) =>
-                    prev.map((x, j) => (j === i ? { ...x, code: e.target.value } : x)),
+                    prev.map((x, j) => (j === i ? { ...x, code: v ?? '' } : x)),
                   )
                 }
               />

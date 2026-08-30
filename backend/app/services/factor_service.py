@@ -97,10 +97,51 @@ def compute_ic(
     f = registry.get(factor_code)
     if f is None:
         return None
+
+    # The rebalance date may lack `horizon` forward trading days (the factor
+    # page passes the range END as trade_date, which defaults to today).
+    # Fall back to the latest settled date that HAS horizon forward days, so
+    # the page works out of the box; the effective date is returned in the
+    # payload. With fewer than horizon+1 settled dates in total there isn't
+    # enough history for any date — the caller reports "insufficient data".
+    settled_desc = db.execute(
+        select(DailyPrice.trade_date)
+        .where(DailyPrice.pct_change.is_not(None))
+        .group_by(DailyPrice.trade_date)
+        .order_by(DailyPrice.trade_date.desc())
+        .limit(horizon + 1)
+    ).scalars().all()
+    if len(settled_desc) < horizon + 1:
+        logger.warning("ic: not enough settled history (%d dates)", len(settled_desc))
+        return None
+    latest_ok = min(trade_date, settled_desc[-1])
+    if latest_ok != trade_date:
+        logger.info(
+            "ic: trade_date %s lacks %d forward days, falling back to %s",
+            trade_date, horizon, latest_ok,
+        )
+        trade_date = latest_ok
+
     codes = _universe_codes(db, trade_date)
     if len(codes) < 10:
         logger.warning("ic: universe too small (%d), skipping", len(codes))
         return None
+
+    # Warm the per-session caches with bulk queries so the per-code compute
+    # loop below stays off the DB — without this each code triggers its own
+    # query (~30ms × 300 codes ≈ 10s, the dominant cost of this endpoint).
+    from app.factor import cache as fcache
+    from app.services import market_service
+
+    if f.category in ("trend", "momentum", "volatility", "volume"):
+        market_service.prefetch_kline_windows(db, codes, trade_date)
+    if f.category in ("volume", "fundamental"):
+        fcache.prefetch_stock_pool(db, codes, trade_date)
+    if f.category == "fundamental":
+        fcache.prefetch_financial(db, codes)
+    if f.category == "sentiment":
+        fcache.prefetch_market_tables(db)
+        fcache.prefetch_streak(db, codes, trade_date)
 
     # factor values + forward-close on the universe
     fv, fwd_close = {}, {}

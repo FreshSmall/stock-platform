@@ -27,3 +27,129 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/* Markdown typography shared by AI content (Assistant / Reports / Analysis). */
+.assistant-md {
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+.assistant-md > :first-child {
+  margin-top: 0;
+}
+
+.assistant-md > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-md h1,
+.assistant-md h2,
+.assistant-md h3,
+.assistant-md h4,
+.assistant-md h5,
+.assistant-md h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.assistant-md h1 {
+  font-size: 1.35em;
+}
+
+.assistant-md h2 {
+  font-size: 1.2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.assistant-md h3 {
+  font-size: 1.05em;
+}
+
+.assistant-md h4,
+.assistant-md h5,
+.assistant-md h6 {
+  font-size: 1em;
+}
+
+.assistant-md p {
+  margin: 0.6em 0;
+}
+
+.assistant-md ul,
+.assistant-md ol {
+  margin: 0.6em 0;
+  padding-left: 1.6em;
+}
+
+.assistant-md li {
+  margin: 0.3em 0;
+}
+
+.assistant-md li::marker {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.assistant-md strong {
+  font-weight: 600;
+}
+
+.assistant-md blockquote {
+  margin: 0.8em 0;
+  padding: 0.4em 0.9em;
+  border-left: 3px solid #d9d9d9;
+  border-radius: 0 4px 4px 0;
+  background: #fafafa;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.assistant-md code {
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.assistant-md pre {
+  margin: 0.8em 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  overflow: auto;
+}
+
+.assistant-md pre code {
+  padding: 0;
+  background: none;
+}
+
+.assistant-md table {
+  margin: 0.8em 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.assistant-md th,
+.assistant-md td {
+  padding: 6px 10px;
+  border: 1px solid #e8e8e8;
+  text-align: left;
+}
+
+.assistant-md th {
+  background: #fafafa;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.assistant-md a {
+  color: #1677ff;
+}
+
+.assistant-md hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid #f0f0f0;
+}

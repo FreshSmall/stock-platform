@@ -101,6 +101,101 @@ def get_stock_info(db: Session, code: str) -> StockPool | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
+# ---------------------------------------------------------------------------
+# Session-scoped daily-K cache (N+1 fix for factor computation).
+#
+# Factor computes call ``get_kline(db, code, end=d)`` once per trade day (the
+# compute_series loop) — each call used to re-query the code's whole history,
+# ~1200 queries ≈ 50s for a 5-year range after the history back-fill grew the
+# table to 5.4M rows. Within one request (session) the bars cannot meaningfully
+# change, so the first call for a code loads its full history once and later
+# calls slice in memory. ``prefetch_kline_windows`` warms the cache for many
+# codes with ONE windowed bulk query (compute_ic's ~300-code universe).
+# ---------------------------------------------------------------------------
+
+_KLINE_CACHE_ATTR = "_kline_window_cache"
+
+
+def _kline_cache(db: Session) -> dict:
+    """The per-session cache: ``{code: (covered_from, covered_to, rows)}``."""
+    cache = getattr(db, _KLINE_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(db, _KLINE_CACHE_ATTR, cache)
+    return cache
+
+
+def _slice_rows(rows: list, start: date | None, end: date | None) -> list:
+    out = rows
+    if start is not None:
+        out = [r for r in out if r.trade_date >= start]
+    if end is not None:
+        out = [r for r in out if r.trade_date <= end]
+    return list(out)
+
+
+def _get_kline_cached(db: Session, code: str, start: date | None, end: date | None) -> list:
+    """Daily bars for ``code``, cached per session (see block comment above)."""
+    from datetime import date as _date
+
+    cache = _kline_cache(db)
+    entry = cache.get(code)
+    if entry is not None:
+        lo, hi, rows = entry
+        if (start is None or start >= lo) and (end is None or end <= hi):
+            return _slice_rows(rows, start, end)
+    full = list(
+        db.execute(
+            select(DailyPrice)
+            .where(DailyPrice.stock_code == code)
+            .order_by(DailyPrice.trade_date.asc())
+        )
+        .scalars()
+        .all()
+    )
+    # A full load covers everything the table has for the code.
+    cache[code] = (_date.min, _date.max, full)
+    return _slice_rows(full, start, end)
+
+
+def prefetch_kline_windows(
+    db: Session, codes: list[str], end: date, calendar_days: int = 280
+) -> None:
+    """Warm the session cache with trailing windows for many codes in one query.
+
+    The window must cover the largest factor lookback (``_WINDOW`` = 120 bars
+    ≈ 170 trading days ≈ 280 calendar days). Codes with no bars inside the
+    window are left uncached — their computes fall back to a direct query,
+    exactly as before.
+    """
+    if not codes:
+        return
+    from datetime import timedelta
+
+    start = end - timedelta(days=calendar_days)
+    rows = (
+        db.execute(
+            select(DailyPrice)
+            .where(
+                DailyPrice.stock_code.in_(codes),
+                DailyPrice.trade_date >= start,
+                DailyPrice.trade_date <= end,
+            )
+            .order_by(DailyPrice.stock_code.asc(), DailyPrice.trade_date.asc())
+        )
+        .scalars()
+        .all()
+    )
+    cache = _kline_cache(db)
+    grouped: dict[str, list] = {}
+    for r in rows:
+        grouped.setdefault(r.stock_code, []).append(r)
+    for code, bars in grouped.items():
+        # ``covered_to = end``: a caller asking for bars ≤ end wants exactly
+        # these rows even when the code's last bar predates ``end`` (halted).
+        cache[code] = (bars[0].trade_date, end, bars)
+
+
 def get_kline(
     db: Session,
     code: str,
@@ -123,6 +218,9 @@ def get_kline(
     The result is ordered ascending by date so it can be plotted left-to-right.
     Both bounds are inclusive.
     """
+    if period == "d":
+        return _get_kline_cached(db, code, start, end)
+
     stmt = select(DailyPrice).where(DailyPrice.stock_code == code)
     if start:
         stmt = stmt.where(DailyPrice.trade_date >= start)
@@ -131,7 +229,7 @@ def get_kline(
     stmt = stmt.order_by(DailyPrice.trade_date.asc())
     daily = list(db.execute(stmt).scalars().all())
 
-    if period == "d" or not daily:
+    if not daily:
         return daily
 
     # Aggregate to weekly/monthly. Build a DataFrame keyed by trade_date.

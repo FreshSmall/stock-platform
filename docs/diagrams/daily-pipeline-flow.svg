@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 792">
+  <!-- ══ 连接线 + 显式箭头 ══ -->
+  <line x1="300" y1="76" x2="300" y2="108" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,108 297,100 303,100" fill="#4f5d75"/>
+  <line x1="300" y1="168" x2="300" y2="198" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,198 297,190 303,190" fill="#4f5d75"/>
+  <line x1="300" y1="258" x2="300" y2="286" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,286 297,278 303,278" fill="#4f5d75"/>
+  <line x1="400" y1="336" x2="500" y2="336" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="500,336 492,333 492,339" fill="#4f5d75"/>
+  <line x1="300" y1="386" x2="300" y2="418" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,418 297,410 303,410" fill="#4f5d75"/>
+  <line x1="300" y1="470" x2="300" y2="492" stroke="#4f5d75" stroke-width="1.2"/>
+  <path d="M 610,364 V 488 Q 610,496 602,496 H 306" fill="none" stroke="#4f5d75" stroke-width="1.2"/>
+  <circle cx="300" cy="496" r="4" fill="#2d3142"/>
+  <line x1="300" y1="500" x2="300" y2="514" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,514 297,506 303,506" fill="#4f5d75"/>
+  <line x1="300" y1="574" x2="300" y2="602" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,602 297,594 303,594" fill="#4f5d75"/>
+  <line x1="300" y1="654" x2="300" y2="682" stroke="#4f5d75" stroke-width="1.2"/>
+  <polygon points="300,682 297,674 303,674" fill="#4f5d75"/>
+
+  <!-- ══ 分支标签 ══ -->
+  <g><rect x="442" y="316" width="16" height="12" rx="2" fill="#f5f5f5"/><text x="450" y="325" fill="#7a8399" font-size="8" text-anchor="middle">是</text></g>
+  <g><rect x="308" y="400" width="16" height="12" rx="2" fill="#f5f5f5"/><text x="316" y="409" fill="#7a8399" font-size="8">否</text></g>
+
+  <!-- ══ 节点（形状即类型：椭圆=起止 / 矩形=步骤 / 菱形=判断）══ -->
+  <g>
+    <rect x="160" y="32" width="280" height="44" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="50" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">交易日盘后 · 调度启动</text>
+    <text x="300" y="64" fill="#4f5d75" font-size="9" text-anchor="middle">APScheduler · 16:25</text>
+  </g>
+  <g>
+    <rect x="160" y="108" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="132" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">盘后数据同步</text>
+    <text x="300" y="148" fill="#4f5d75" font-size="9" text-anchor="middle">16:25 股票池 → 16:35–17:10 指数/情绪/北向/板块</text>
+    <text x="300" y="160" fill="#4f5d75" font-size="9" text-anchor="middle">18:00 龙虎榜 · 19:30 财务 · 幂等 upsert</text>
+  </g>
+  <g>
+    <rect x="160" y="198" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="222" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">全市场日K增量同步</text>
+    <text x="300" y="238" fill="#4f5d75" font-size="9" text-anchor="middle">17:30 · akshare 主源 + 腾讯兜底</text>
+    <text x="300" y="250" fill="#4f5d75" font-size="9" text-anchor="middle">近 7 日增量 → 幂等 upsert → daily_prices</text>
+  </g>
+  <g>
+    <polygon points="300,286 400,336 300,386 200,336" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+    <text x="300" y="330" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">入库行数 ≥ 基线?</text>
+    <text x="300" y="346" fill="#4f5d75" font-size="8" text-anchor="middle">23:00 · RETRY CHECK</text>
+  </g>
+  <g>
+    <rect x="500" y="308" width="220" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="610" y="330" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">全量重跑日K同步</text>
+    <text x="610" y="346" fill="#4f5d75" font-size="9" text-anchor="middle">REPLAY FULL MARKET</text>
+  </g>
+  <g>
+    <rect x="160" y="418" width="280" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="440" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">仅重放失败代码</text>
+    <text x="300" y="456" fill="#4f5d75" font-size="9" text-anchor="middle">REPLAY FAILED ONLY</text>
+  </g>
+  <g>
+    <rect x="160" y="514" width="280" height="60" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="538" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">因子按需计算</text>
+    <text x="300" y="554" fill="#4f5d75" font-size="9" text-anchor="middle">用户请求触发 · 不做预计算</text>
+    <text x="300" y="566" fill="#4f5d75" font-size="9" text-anchor="middle">trend·momentum·volume·fundamental·sentiment</text>
+  </g>
+  <g>
+    <rect x="160" y="602" width="280" height="52" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="624" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">多因子打分</text>
+    <text x="300" y="640" fill="#4f5d75" font-size="9" text-anchor="middle">z-score → clip ±3 → 加权 → Top-N</text>
+  </g>
+  <g>
+    <rect x="160" y="682" width="280" height="44" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="300" y="700" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">Factor 页 · 排名展示</text>
+    <text x="300" y="716" fill="#4f5d75" font-size="9" text-anchor="middle">多因子 TOP-N</text>
+  </g>
+
+  <!-- ══ 图例 ══ -->
+  <line x1="32" y1="758" x2="868" y2="758" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <text x="32" y="778" fill="#4f5d75" font-size="8">LEGEND</text>
+  <g><rect x="110" y="768" width="24" height="12" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="142" y="778" fill="#4f5d75" font-size="8">开始 / 结束</text></g>
+  <g><rect x="250" y="768" width="24" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/><text x="282" y="778" fill="#4f5d75" font-size="8">处理步骤</text></g>
+  <g><polygon points="412,766 424,774 412,782 400,774" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/><text x="432" y="778" fill="#4f5d75" font-size="8">条件判断 · 焦点</text></g>
+  <g><circle cx="558" cy="774" r="4" fill="#2d3142"/><text x="570" y="778" fill="#4f5d75" font-size="8">分支汇合</text></g>
+</svg>

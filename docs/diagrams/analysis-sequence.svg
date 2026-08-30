@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720">
+  <text x="32" y="36" fill="rgba(45,49,66,0.40)" font-size="7">SEQUENCE · 时间自上而下</text>
+
+  <!-- ══ 生命线 ══ -->
+  <line x1="140" y1="108" x2="140" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="400" y1="108" x2="400" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="660" y1="108" x2="660" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="880" y1="108" x2="880" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- ══ OPT 片段：缓存命中分支（仅跨 浏览器+FastAPI 生命线）══ -->
+  <g>
+    <rect x="124" y="168" width="292" height="80" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="124" y="168" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="144" y="180" fill="#4f5d75" font-size="8" text-anchor="middle">OPT</text>
+    <text x="136" y="200" fill="#4f5d75" font-size="8">[已有当日缓存]</text>
+  </g>
+
+  <!-- ══ 消息（线 + 箭头 + 标签成组）══ -->
+  <g>
+    <line x1="140" y1="140" x2="396" y2="140" stroke="#2e5aa8" stroke-width="1.2"/>
+    <polygon points="396,140 388,137 388,143" fill="#2e5aa8"/>
+    <rect x="200" y="119" width="140" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="270" y="130" fill="#7a8399" font-size="8" text-anchor="middle">GET /analysis/{code}/latest</text>
+  </g>
+  <g>
+    <line x1="396" y1="224" x2="144" y2="224" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4"/>
+    <polygon points="144,224 152,221 152,227" fill="#4f5d75"/>
+    <rect x="226" y="203" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="270" y="214" fill="#7a8399" font-size="8" text-anchor="middle">命中 · 返回缓存分析</text>
+  </g>
+  <g>
+    <line x1="140" y1="284" x2="396" y2="284" stroke="#2e5aa8" stroke-width="1.2"/>
+    <polygon points="396,284 388,281 388,287" fill="#2e5aa8"/>
+    <rect x="220" y="263" width="100" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="270" y="274" fill="#7a8399" font-size="8" text-anchor="middle">POST /analysis/{code}</text>
+  </g>
+  <g>
+    <line x1="404" y1="332" x2="656" y2="332" stroke="#4f5d75" stroke-width="1.2"/>
+    <polygon points="656,332 648,329 648,335" fill="#4f5d75"/>
+    <rect x="482" y="311" width="96" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="530" y="322" fill="#7a8399" font-size="8" text-anchor="middle">READ 行情 + 因子数据</text>
+  </g>
+  <g>
+    <line x1="656" y1="380" x2="404" y2="380" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4"/>
+    <polygon points="404,380 412,377 412,383" fill="#4f5d75"/>
+    <rect x="490" y="359" width="80" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="530" y="370" fill="#7a8399" font-size="8" text-anchor="middle">K线 · 指标 · 财务</text>
+  </g>
+  <g>
+    <line x1="404" y1="452" x2="876" y2="452" stroke="#2e5aa8" stroke-width="1.2"/>
+    <polygon points="876,452 868,449 868,455" fill="#2e5aa8"/>
+    <rect x="430" y="431" width="140" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="500" y="442" fill="#7a8399" font-size="8" text-anchor="middle">prompt: 行情+因子上下文</text>
+  </g>
+  <g>
+    <line x1="876" y1="500" x2="404" y2="500" stroke="#2e5aa8" stroke-width="1" stroke-dasharray="5,4"/>
+    <polygon points="404,500 412,497 412,503" fill="#2e5aa8"/>
+    <rect x="494" y="479" width="72" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="530" y="490" fill="#7a8399" font-size="8" text-anchor="middle">LLM token 流</text>
+  </g>
+  <g>
+    <line x1="396" y1="548" x2="144" y2="548" stroke="#eb6c36" stroke-width="1.2"/>
+    <polygon points="144,548 152,545 152,551" fill="#eb6c36"/>
+    <rect x="226" y="527" width="88" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="270" y="538" fill="#eb6c36" font-size="8" text-anchor="middle">SSE 流式返回分析</text>
+  </g>
+  <g>
+    <line x1="404" y1="596" x2="648" y2="596" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4"/>
+    <polyline points="648,593 656,596 648,599" fill="none" stroke="#4f5d75" stroke-width="1.2"/>
+    <rect x="482" y="575" width="96" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="530" y="586" fill="#7a8399" font-size="8" text-anchor="middle">WRITE sa_ai_analysis</text>
+  </g>
+
+  <!-- ══ 激活条 ══ -->
+  <rect x="396" y="276" width="8" height="328" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+  <rect x="656" y="324" width="8" height="64" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+  <rect x="656" y="588" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+  <rect x="876" y="444" width="8" height="64" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+  <!-- ══ 参与者 ══ -->
+  <g>
+    <rect x="60" y="44" width="160" height="64" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+    <rect x="68" y="50" width="42" height="12" rx="2" fill="none" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+    <text x="89" y="59" fill="rgba(122,131,153,0.90)" font-size="7" text-anchor="middle">CLIENT</text>
+    <text x="140" y="84" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">浏览器</text>
+    <text x="140" y="98" fill="#4f5d75" font-size="9" text-anchor="middle">React SPA · ECharts</text>
+  </g>
+  <g>
+    <rect x="320" y="44" width="160" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="328" y="50" width="26" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+    <text x="341" y="59" fill="rgba(45,49,66,0.80)" font-size="7" text-anchor="middle">API</text>
+    <text x="400" y="84" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">FastAPI 后端</text>
+    <text x="400" y="98" fill="#4f5d75" font-size="9" text-anchor="middle">analysis_service</text>
+  </g>
+  <g>
+    <rect x="580" y="44" width="160" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+    <rect x="588" y="50" width="20" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+    <text x="598" y="59" fill="rgba(45,49,66,0.70)" font-size="7" text-anchor="middle">DB</text>
+    <text x="660" y="84" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">MySQL · RDS</text>
+    <text x="660" y="98" fill="#4f5d75" font-size="9" text-anchor="middle">sa_ai_analysis 表</text>
+  </g>
+  <g>
+    <rect x="800" y="44" width="160" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+    <rect x="808" y="50" width="26" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+    <text x="821" y="59" fill="rgba(45,49,66,0.70)" font-size="7" text-anchor="middle">LLM</text>
+    <text x="880" y="84" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle">DeepSeek LLM</text>
+    <text x="880" y="98" fill="#4f5d75" font-size="9" text-anchor="middle">langchain</text>
+  </g>
+
+  <!-- ══ 图例 ══ -->
+  <line x1="32" y1="684" x2="968" y2="684" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <text x="32" y="704" fill="#4f5d75" font-size="8">LEGEND</text>
+  <g><line x1="110" y1="700" x2="134" y2="700" stroke="#2e5aa8" stroke-width="1.2"/><polygon points="142,700 134,697 134,703" fill="#2e5aa8"/><text x="150" y="704" fill="#4f5d75" font-size="8">同步调用</text></g>
+  <g><line x1="270" y1="700" x2="294" y2="700" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4"/><polygon points="302,700 294,697 294,703" fill="#4f5d75"/><text x="310" y="704" fill="#4f5d75" font-size="8">返回 · 虚线实心头</text></g>
+  <g><line x1="470" y1="700" x2="494" y2="700" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4"/><polyline points="494,697 502,700 494,703" fill="none" stroke="#4f5d75" stroke-width="1.2"/><text x="510" y="704" fill="#4f5d75" font-size="8">异步 · 空心头</text></g>
+  <g><line x1="650" y1="700" x2="674" y2="700" stroke="#eb6c36" stroke-width="1.2"/><polygon points="682,700 674,697 674,703" fill="#eb6c36"/><text x="690" y="704" fill="#4f5d75" font-size="8">SSE 焦点</text></g>
+</svg>
