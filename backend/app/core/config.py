@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     history_batch_size: int = 15          # stocks per polling tick
     history_poll_minutes: int = 10        # polling interval
 
+    # --- V2.1 数据修复（spec-004）-------------------------------------------
+    # 复权读取切换开关：legacy=daily_prices(qfq，现状)；v2=sa_kline_daily(raw)
+    # + sa_adjust_factor 按需折算。灰度校验通过后切 v2，出问题改回 legacy 即回滚。
+    kline_source: str = "legacy"
+    # sa_kline_daily 全量重灌 tick（与 history_backfill 同一防封节奏），污染
+    # 清单（priority=0）优先出队。
+    kline_rebuild_enabled: bool = False   # D1 启动重灌时手动置 True
+    kline_rebuild_batch_size: int = 15
+    kline_rebuild_poll_minutes: int = 10
+    # 每日数据质量巡检（08:00）。
+    quality_check_enabled: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,

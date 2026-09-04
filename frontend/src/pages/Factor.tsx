@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Empty,
@@ -23,6 +24,7 @@ import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { computeFactorIC, computeFactorSeries, listFactors } from '../api/factor';
+import type { SampleFilters } from '../api/factor';
 import type {
   FactorBrief,
   FactorCategory,
@@ -37,6 +39,53 @@ import EmptyState from '../components/EmptyState';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
+
+// V2.1 样本过滤条（BP-V2.1-004/005）：IC 与打分共用；默认全关 = V2 原行为。
+function SampleFilterBar({
+  value,
+  onChange,
+}: {
+  value: SampleFilters;
+  onChange: (v: SampleFilters) => void;
+}) {
+  return (
+    <Space wrap size={12}>
+      <Space size={4}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          股票池
+        </Text>
+        <Select
+          size="small"
+          value={value.pool ?? 'current'}
+          style={{ width: 110 }}
+          onChange={(v) => onChange({ ...value, pool: v })}
+          options={[
+            { value: 'current', label: '当前快照' },
+            { value: 'pit', label: '历史时点(PIT)' },
+          ]}
+        />
+      </Space>
+      <Checkbox
+        checked={value.exclude_st ?? false}
+        onChange={(e) => onChange({ ...value, exclude_st: e.target.checked })}
+      >
+        剔除 ST
+      </Checkbox>
+      <Checkbox
+        checked={value.exclude_suspended ?? false}
+        onChange={(e) => onChange({ ...value, exclude_suspended: e.target.checked })}
+      >
+        剔除停牌
+      </Checkbox>
+      <Checkbox
+        checked={value.only_tradable ?? false}
+        onChange={(e) => onChange({ ...value, only_tradable: e.target.checked })}
+      >
+        仅可成交
+      </Checkbox>
+    </Space>
+  );
+}
 
 // Factor category tree groups.
 const CATEGORY_TREE: { key: FactorCategory; title: string }[] = [
@@ -62,6 +111,7 @@ export default function Factor() {
     dayjs(),
   ]);
   const [horizon, setHorizon] = useState(5);
+  const [sample, setSample] = useState<SampleFilters>({});
 
   // Load all factors once (no category filter) so the tree can group them.
   const factorsQ = useQuery<FactorBrief[]>({
@@ -94,8 +144,8 @@ export default function Factor() {
   });
 
   const icQ = useQuery<FactorIC | null>({
-    queryKey: ['factor', effectiveFactor, 'ic', horizon, end],
-    queryFn: () => computeFactorIC(effectiveFactor!, horizon, end),
+    queryKey: ['factor', effectiveFactor, 'ic', horizon, end, sample],
+    queryFn: () => computeFactorIC(effectiveFactor!, horizon, end, sample),
     enabled: !!effectiveFactor,
   });
 
@@ -166,6 +216,7 @@ export default function Factor() {
           }
           extra={
             <Space wrap>
+              <SampleFilterBar value={sample} onChange={setSample} />
               <Input
                 placeholder="股票代码"
                 value={stock}
@@ -271,6 +322,7 @@ function MultiFactorScoreCard({ factors: allFactors }: { factors: FactorBrief[] 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tradeDate, setTradeDate] = useState<Dayjs>(dayjs());
+  const [sample, setSample] = useState<SampleFilters>({});
 
   const run = async () => {
     setLoading(true);
@@ -279,6 +331,7 @@ function MultiFactorScoreCard({ factors: allFactors }: { factors: FactorBrief[] 
       const data = await multiFactorScore(
         factors.filter((f) => f.code.trim()),
         tradeDate.format('YYYY-MM-DD'),
+        sample,
       );
       setResults(data ?? []);
     } catch (e: unknown) {
@@ -297,6 +350,7 @@ function MultiFactorScoreCard({ factors: allFactors }: { factors: FactorBrief[] 
             onChange={(v) => v && setTradeDate(v)}
             allowClear={false}
           />
+          <SampleFilterBar value={sample} onChange={setSample} />
           {factors.map((f, i) => (
             <Space.Compact key={i}>
               <Select

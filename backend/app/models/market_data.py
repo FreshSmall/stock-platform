@@ -188,6 +188,11 @@ class SaAdminTaskLog(Base):
 
     Maps the ``sa_admin_task_log`` table. ``triggered_by`` is either ``scheduler``
     or ``manual:<username>``. ``status`` is running/success/failed.
+
+    V2.1 long-task support: ``progress_done``/``progress_total`` let batch
+    runners report live progress (e.g. the kline re-ingest tick writes
+    ``done/total`` per batch), and ``result_json`` carries a summary payload
+    (failure lists, per-window stats) for the admin detail drawer.
     """
 
     __tablename__ = "sa_admin_task_log"
@@ -198,6 +203,9 @@ class SaAdminTaskLog(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     rows_affected: Mapped[Optional[int]] = mapped_column(Integer)
+    progress_done: Mapped[Optional[int]] = mapped_column(Integer)
+    progress_total: Mapped[Optional[int]] = mapped_column(Integer)
+    result_json: Mapped[Optional[str]] = mapped_column(Text)
     error: Mapped[Optional[str]] = mapped_column(Text)
     triggered_by: Mapped[Optional[str]] = mapped_column(String(50))
 

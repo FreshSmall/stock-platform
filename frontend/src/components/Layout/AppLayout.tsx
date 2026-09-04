@@ -13,10 +13,11 @@ import {
   LineChartOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import StockSearch from '../StockSearch';
 import RiskNotice from '../RiskNotice';
 import { useAuthStore } from '../../store/authStore';
+import { me } from '../../api/auth';
 
 const { Header, Sider, Content, Footer } = Layout;
 
@@ -41,7 +42,17 @@ const ADMIN_NAV: NavItem = { key: '/admin', label: '管理', icon: <SettingOutli
 export default function AppLayout() {
   const nav = useNavigate();
   const loc = useLocation();
-  const { username, logout, role } = useAuthStore();
+  const { username, logout, role, token, setRole } = useAuthStore();
+
+  // Keep the cached role honest: refresh from /me on every mount. Covers
+  // sessions logged in before the role feature existed (null) AND stale
+  // roles after a server-side promotion/demotion (e.g. 'user' → 'admin').
+  useEffect(() => {
+    if (!token) return;
+    me()
+      .then((p: { role?: string } | undefined) => setRole(p?.role ?? 'user'))
+      .catch(() => undefined); // 401 redirects via the client interceptor
+  }, [token, setRole]);
 
   const items = role === 'admin' ? [...NAV, ADMIN_NAV] : NAV;
 

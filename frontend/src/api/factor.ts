@@ -28,15 +28,25 @@ export const computeFactorSeries = (
     })
     .then((r) => r.data);
 
+// V2.1 sample-governance options shared by IC and scoring (defaults keep the
+// unchanged V2 behaviour; pool="pit" swaps in the point-in-time universe).
+export interface SampleFilters {
+  pool?: 'current' | 'pit';
+  exclude_st?: boolean;
+  exclude_suspended?: boolean;
+  only_tradable?: boolean;
+}
+
 // IC analysis for a factor on one rebalance date (latest if omitted).
 export const computeFactorIC = (
   code: string,
   horizon = 5,
   tradeDate?: string,
+  filters?: SampleFilters,
 ) =>
   client
     .get<FactorIC | null>(`/factor/${code}/ic`, {
-      params: { horizon, trade_date: tradeDate },
+      params: { horizon, trade_date: tradeDate, ...filters },
     })
     .then((r) => r.data);
 
@@ -44,7 +54,12 @@ export const computeFactorIC = (
 export const multiFactorScore = (
   factors: { code: string; weight: number }[],
   tradeDate?: string,
+  filters?: SampleFilters,
 ) =>
   client
-    .post<FactorScoreRow[] | null>('/factor/score', { factors, trade_date: tradeDate })
+    .post<FactorScoreRow[] | null>('/factor/score', {
+      factors,
+      trade_date: tradeDate,
+      ...filters,
+    })
     .then((r) => r.data);

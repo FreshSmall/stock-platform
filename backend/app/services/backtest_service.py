@@ -355,11 +355,19 @@ def run_backtest(
 def create_backtest_run(db: Session, user_id: int | None, req: dict) -> SaBacktestRun:
     """Insert a ``pending`` run row and return it (not yet executed)."""
     run_id = f"bt-{uuid.uuid4().hex[:12]}"
+    params = dict(req.get("params") or {})
+    # V2.1 sample-governance flags ride inside params under a reserved key so
+    # they persist with the run; execute_and_store pops it before the
+    # strategy sees any kwargs.
+    params["_sample"] = {
+        k: bool(req.get(k, False))
+        for k in ("exclude_st", "exclude_suspended", "only_tradable")
+    }
     run = SaBacktestRun(
         run_id=run_id,
         user_id=user_id,
         strategy=req["strategy"],
-        params=req.get("params", {}),
+        params=params,
         stock_pool=req["stock_pool"],
         start_date=req["start_date"],
         end_date=req["end_date"],
@@ -387,6 +395,20 @@ def execute_and_store(db: Session, run: SaBacktestRun) -> SaBacktestResult:
         # so it isn't passed to the backtrader Strategy via **params.
         strategy_params = dict(run.params or {})
         benchmark = strategy_params.pop("benchmark", None)
+        # V2.1 sample governance: gate the single-stock target at the window's
+        # first bar. (Per-day matching constraints are V2.2 T2.2 scope.)
+        flags = strategy_params.pop("_sample", {})
+        if any(bool(v) for v in flags.values()) and run.stock_pool:
+            from app.services import sample_filters
+
+            kept, meta = sample_filters.apply_sample_filters(
+                db, list(run.stock_pool), run.start_date, **flags
+            )
+            if not kept:
+                raise ValueError(
+                    f"target {run.stock_pool[0]} fails sample filters at "
+                    f"{run.start_date} ({meta.get('excluded')})"
+                )
         result_data = run_backtest(
             db,
             strategy=run.strategy,

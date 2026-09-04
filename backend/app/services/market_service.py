@@ -17,11 +17,16 @@ so if/when we add caching it belongs at the API layer on the serialized
 response, not here.
 """
 
+from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.models.kline import SaAdjustFactor, SaKlineDaily
 from app.models.stock import DailyPrice, StockPool
 
 # The three major A-share indices we surface on the overview screen.
@@ -116,6 +121,102 @@ def get_stock_info(db: Session, code: str) -> StockPool | None:
 _KLINE_CACHE_ATTR = "_kline_window_cache"
 
 
+def _is_v2() -> bool:
+    """Whether daily-K reads should hit the V2.1 raw store (``sa_kline_daily``)."""
+    return settings.kline_source == "v2"
+
+
+def _kline_model():
+    """The daily-K ORM class the current ``kline_source`` setting points at."""
+    return SaKlineDaily if _is_v2() else DailyPrice
+
+
+@dataclass
+class AdjustedBar:
+    """A daily bar with prices multiplied by an adjust ratio.
+
+    Field-compatible with the ``DailyPrice``/``SaKlineDaily`` attributes the
+    downstream consumers (factors, backtest, serializers) touch. ``pct_change``
+    passes through untouched — it is the source's true return, valid on any
+    basis.
+    """
+
+    trade_date: date
+    open: Optional[Decimal]
+    close: Optional[Decimal]
+    high: Optional[Decimal]
+    low: Optional[Decimal]
+    volume: Optional[int]
+    amount: Optional[Decimal]
+    pct_change: Optional[Decimal]
+    turnover: Optional[Decimal]
+
+
+def _apply_adjust(db: Session, code: str, rows: list, adjust: str, end: date | None) -> list:
+    """Convert RAW bars to the requested basis; must run AFTER date slicing.
+
+    Rules (spec-004 实现方案 §3.2):
+
+    * ``kline_source="legacy"`` — rows already ARE qfq; returned untouched
+      (``hfq``/``raw`` are unsupported on the legacy table and log a debug
+      note rather than erroring, so a premature flag flip degrades visibly,
+      not fatally).
+    * ``kline_source="v2"`` — rows are raw; ``hfq = raw × factor_t`` and
+      ``qfq = raw × factor_t / factor_latest``, where ``factor_latest`` is
+      the latest factor **as of ``end``** (no look-ahead when factor code
+      slices history with ``end=trade_date``). Stocks with no factor rows
+      (indices, not-yet-rebuilt codes) pass through with ratio 1.0.
+    * The session cache stays RAW — adjustment happens on copies at return
+      time, so two requests with different bases never pollute each other.
+    """
+    if not rows or adjust == "raw" or not _is_v2():
+        # Legacy rows are already qfq; raw was never adjusted. Either way the
+        # caller gets the stored bars as-is (hfq/raw on the legacy store
+        # degrade to qfq rather than erroring — visible, not fatal).
+        return rows
+
+    eff_end = end or date.max
+    factor_rows = db.execute(
+        select(SaAdjustFactor.trade_date, SaAdjustFactor.adj_factor)
+        .where(
+            SaAdjustFactor.stock_code == code,
+            SaAdjustFactor.trade_date <= eff_end,
+        )
+        .order_by(SaAdjustFactor.trade_date.asc())
+    ).all()
+    if not factor_rows:
+        return rows
+    factor_map = {d: float(f) for d, f in factor_rows}
+    factor_latest = factor_map[max(factor_map)]
+
+    out: list = []
+    for r in rows:
+        f = factor_map.get(getattr(r, "trade_date"))
+        ratio = (f / factor_latest) if (adjust == "qfq" and f) else (f if adjust == "hfq" else 1.0)
+        if not ratio:
+            ratio = 1.0
+
+        def _mul(v) -> Decimal | None:
+            if v is None or ratio == 1.0:
+                return v
+            return (Decimal(str(float(v))) * Decimal(str(ratio))).quantize(Decimal("0.01"))
+
+        out.append(
+            AdjustedBar(
+                trade_date=r.trade_date,
+                open=_mul(r.open),
+                close=_mul(r.close),
+                high=_mul(r.high),
+                low=_mul(r.low),
+                volume=r.volume,
+                amount=r.amount,
+                pct_change=r.pct_change,
+                turnover=r.turnover,
+            )
+        )
+    return out
+
+
 def _kline_cache(db: Session) -> dict:
     """The per-session cache: ``{code: (covered_from, covered_to, rows)}``."""
     cache = getattr(db, _KLINE_CACHE_ATTR, None)
@@ -138,6 +239,7 @@ def _get_kline_cached(db: Session, code: str, start: date | None, end: date | No
     """Daily bars for ``code``, cached per session (see block comment above)."""
     from datetime import date as _date
 
+    model = _kline_model()
     cache = _kline_cache(db)
     entry = cache.get(code)
     if entry is not None:
@@ -146,9 +248,9 @@ def _get_kline_cached(db: Session, code: str, start: date | None, end: date | No
             return _slice_rows(rows, start, end)
     full = list(
         db.execute(
-            select(DailyPrice)
-            .where(DailyPrice.stock_code == code)
-            .order_by(DailyPrice.trade_date.asc())
+            select(model)
+            .where(model.stock_code == code)
+            .order_by(model.trade_date.asc())
         )
         .scalars()
         .all()
@@ -172,16 +274,17 @@ def prefetch_kline_windows(
         return
     from datetime import timedelta
 
+    model = _kline_model()
     start = end - timedelta(days=calendar_days)
     rows = (
         db.execute(
-            select(DailyPrice)
+            select(model)
             .where(
-                DailyPrice.stock_code.in_(codes),
-                DailyPrice.trade_date >= start,
-                DailyPrice.trade_date <= end,
+                model.stock_code.in_(codes),
+                model.trade_date >= start,
+                model.trade_date <= end,
             )
-            .order_by(DailyPrice.stock_code.asc(), DailyPrice.trade_date.asc())
+            .order_by(model.stock_code.asc(), model.trade_date.asc())
         )
         .scalars()
         .all()
@@ -202,39 +305,51 @@ def get_kline(
     start: date | None = None,
     end: date | None = None,
     period: str = "d",
+    adjust: str = "qfq",
 ) -> list:
     """Return OHLCV bars for ``code``, optionally bounded by date range.
 
     ``period`` selects the bar size:
 
-    - ``"d"`` (default): daily bars straight from ``daily_prices`` (returns
-      :class:`DailyPrice` ORM rows).
+    - ``"d"`` (default): daily bars straight from the active K-line table
+      (returns ORM rows on ``raw``, :class:`AdjustedBar` otherwise — see
+      ``adjust`` below).
     - ``"w"`` / ``"m"``: weekly / monthly bars aggregated from the daily bars
       via pandas ``resample`` (returns plain dicts with the same field names).
       Weekly bars are anchored on Friday (W-FRI); a week with no Friday bar
       still resolves to its last trading day. OHLC is open=first, high=max,
       low=min, close=last; volume/amount are summed.
 
-    The result is ordered ascending by date so it can be plotted left-to-right.
-    Both bounds are inclusive.
+    ``adjust`` selects the price basis (V2.1, only meaningful with
+    ``kline_source="v2"``; the legacy table is already qfq and passes
+    through): ``"qfq"`` (default, display convention), ``"hfq"`` (stable
+    research basis — identical daily returns to qfq), or ``"raw"``
+    (un-adjusted). The result is ordered ascending by date; both bounds are
+    inclusive; the session cache always stores raw so different bases never
+    cross-contaminate.
     """
     if period == "d":
-        return _get_kline_cached(db, code, start, end)
+        rows = _get_kline_cached(db, code, start, end)
+        return _apply_adjust(db, code, rows, adjust, end)
 
-    stmt = select(DailyPrice).where(DailyPrice.stock_code == code)
+    model = _kline_model()
+    stmt = select(model).where(model.stock_code == code)
     if start:
-        stmt = stmt.where(DailyPrice.trade_date >= start)
+        stmt = stmt.where(model.trade_date >= start)
     if end:
-        stmt = stmt.where(DailyPrice.trade_date <= end)
-    stmt = stmt.order_by(DailyPrice.trade_date.asc())
+        stmt = stmt.where(model.trade_date <= end)
+    stmt = stmt.order_by(model.trade_date.asc())
     daily = list(db.execute(stmt).scalars().all())
 
     if not daily:
         return daily
 
-    # Aggregate to weekly/monthly. Build a DataFrame keyed by trade_date.
+    # Aggregate to weekly/monthly. Build a DataFrame keyed by trade_date —
+    # on the RAW basis first, then fold the adjust ratio into each bar so the
+    # resample sees adjusted prices end-to-end.
     import pandas as pd
 
+    daily = _apply_adjust(db, code, daily, adjust, end)
     df = pd.DataFrame(
         [
             {

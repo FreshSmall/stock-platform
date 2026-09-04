@@ -17,6 +17,15 @@ from app.models.factor import SaFactorIc, SaFactorValue
 from app.models.news import SaNewsSentiment
 from app.models.finance import SaFinancialExtra, SaMoneyFlow
 from app.models.knowledge import SaKnowledgeChunk, SaKnowledgeDoc
+from app.models.kline import (
+    SaAdjustFactor,
+    SaDailyTradeStatus,
+    SaIndustryMap,
+    SaKlineDaily,
+    SaKlineSyncState,
+    SaStockLifecycle,
+)
+from app.models.quality import SaDataQualityCheck, SaDataQualityRule
 from app.models.portfolio import SaPortfolio, SaPortfolioHolding
 from app.models.market_data import (
     SaAdminTaskLog,
@@ -75,4 +84,13 @@ __all__ = [
     "SaAgentReport",
     # application-managed sa_ tables (V2 阶段 N1: 新闻情绪采集)
     "SaNewsSentiment",
+    # application-managed sa_ tables (V2.1 数据修复)
+    "SaKlineDaily",
+    "SaAdjustFactor",
+    "SaStockLifecycle",
+    "SaDailyTradeStatus",
+    "SaIndustryMap",
+    "SaKlineSyncState",
+    "SaDataQualityRule",
+    "SaDataQualityCheck",
 ]

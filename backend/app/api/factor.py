@@ -46,12 +46,26 @@ def compute_ic(
     code: str,
     horizon: int = Query(5, ge=1, le=60),
     trade_date: date | None = None,
+    pool: str = Query("current", pattern="^(current|pit)$"),
+    exclude_st: bool = Query(False),
+    exclude_suspended: bool = Query(False),
+    only_tradable: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> dict:
-    """IC analysis for a factor on one rebalance date (latest if omitted)."""
+    """IC analysis for a factor on one rebalance date (latest if omitted).
+
+    V2.1 sample governance: ``pool=pit`` uses the point-in-time universe;
+    the three flags drop ST / suspended / unbuyable codes (defaults = V2 behaviour).
+    """
     if trade_date is None:
         trade_date = date.today()
-    data = factor_service.compute_ic(db, code, trade_date, horizon)
+    data = factor_service.compute_ic(
+        db, code, trade_date, horizon,
+        pool=pool,
+        exclude_st=exclude_st,
+        exclude_suspended=exclude_suspended,
+        only_tradable=only_tradable,
+    )
     if data is None:
         return _ok(None, msg="insufficient data")
     return _ok(data)
@@ -64,11 +78,22 @@ def multi_factor_score(
 ) -> dict:
     """Multi-factor weighted scoring → ranked stock list (BP-V2-004).
 
-    Body: ``{"factors": [{"code": "pe", "weight": 1.0}, ...], "trade_date": "2026-07-28"}``
+    Body: ``{"factors": [{"code": "pe", "weight": 1.0}, ...], "trade_date": "2026-07-28",
+    "pool": "current|pit", "exclude_st": false, "exclude_suspended": false,
+    "only_tradable": false}`` — the sample-governance keys are optional and
+    default to the unchanged V2 behaviour.
     """
     factors = payload.get("factors", [])
     td = payload.get("trade_date")
     trade_date = date.fromisoformat(td) if td else date.today()
     if not factors:
         return _ok(None, msg="no factors specified")
-    return _ok(factor_service.multi_factor_score(db, factors, trade_date))
+    return _ok(
+        factor_service.multi_factor_score(
+            db, factors, trade_date,
+            pool=payload.get("pool", "current"),
+            exclude_st=bool(payload.get("exclude_st", False)),
+            exclude_suspended=bool(payload.get("exclude_suspended", False)),
+            only_tradable=bool(payload.get("only_tradable", False)),
+        )
+    )

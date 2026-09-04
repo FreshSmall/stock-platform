@@ -67,7 +67,9 @@ def test_list_tasks_and_datasources(admin_and_token):
 
     r2 = client.get("/api/v1/admin/datasources", headers=h)
     assert r2.status_code == 200
-    assert {d["name"] for d in r2.json()["data"]} >= {"akshare"}
+    # V2.1: the catalog mirrors the sources actually used (tushare removed).
+    assert {d["name"] for d in r2.json()["data"]} >= {"tencent", "eastmoney"}
+    assert all(d["name"] != "tushare" for d in r2.json()["data"])
 
 
 def test_run_unknown_task_404(admin_and_token):

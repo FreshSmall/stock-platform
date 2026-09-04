@@ -111,16 +111,36 @@ def _sync_codes(db, codes, start: str, end: str) -> tuple[int, list[str]]:
     Shared by the 17:30 main run and the 23:00 retry. A failure on one code
     logs an error but does not abort the run; the failing code is collected
     into the returned ``failed`` list so the caller can replay it.
+
+    V2.1 write targets (spec-004 §3.3): the legacy ``daily_prices`` path runs
+    while ``kline_source="legacy"``; the raw-store path
+    (``sync_kline.sync_one_stock_v2``) runs once ``kline_rebuild_enabled``
+    opens the migration window (dual-write) and becomes the ONLY path after
+    the ``kline_source="v2"`` cutover. Each path fails independently — a code
+    is marked failed if any attempted write failed.
     """
-    from app.data import sync_daily
+    from app.data import sync_daily, sync_kline
+
+    write_legacy = settings.kline_source == "legacy"
+    write_v2 = settings.kline_source == "v2" or settings.kline_rebuild_enabled
 
     total = 0
     failed: list[str] = []
     for code in codes:
-        try:
-            total += sync_daily.sync_one_stock(db, code, start, end)
-        except Exception as e:  # noqa: BLE001 - log and continue per code
-            logger.error("sync failed for %s: %s", code, e)
+        code_failed = False
+        if write_legacy:
+            try:
+                total += sync_daily.sync_one_stock(db, code, start, end)
+            except Exception as e:  # noqa: BLE001 - log and continue per code
+                logger.error("sync failed for %s: %s", code, e)
+                code_failed = True
+        if write_v2:
+            try:
+                total += sync_kline.sync_one_stock_v2(db, code, start, end)
+            except Exception as e:  # noqa: BLE001
+                logger.error("v2 sync failed for %s: %s", code, e)
+                code_failed = True
+        if code_failed:
             failed.append(code)
     return total, failed
 
@@ -348,6 +368,9 @@ def init_scheduler() -> BackgroundScheduler:
         # V2 agents
         ("market_agent_sync", 18, 10),        # after data is settled
         ("review_agent_sync", 18, 20),
+        # V2.1 样本治理与质量巡检（spec-004）
+        ("trade_status_sync", 19, 0),         # after the 17:30 dual-write settles
+        ("quality_check", 8, 0),              # next-morning patrol over settled data
     ]
     for name, h, m in _v15_jobs:
         sched.add_job(
@@ -358,6 +381,18 @@ def init_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             coalesce=True,
             misfire_grace_time=600,
+        )
+    # Weekly universe/industry refreshes: delisted list (Sat 09:00) and the
+    # eastmoney industry board constituents (Sun 09:00) change slowly.
+    for name, dow in (("delist_sync", "sat"), ("industry_map_sync", "sun")):
+        sched.add_job(
+            _run_admin_task,
+            CronTrigger(hour=9, minute=0, day_of_week=dow),
+            args=[name],
+            id=name,
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
     # Multi-year history back-fill — low-rate polling (anti-ban profile, see
     # app.data.history_backfill). ``jitter`` de-synchronises the tick from any
@@ -381,6 +416,29 @@ def init_scheduler() -> BackgroundScheduler:
         logger.info(
             "history backfill polling job registered (every %d min)",
             settings.history_poll_minutes,
+        )
+    # V2.1 raw-store re-ingest — same low-rate polling profile as the history
+    # back-fill (own quiet-window check, circuit breaker, priority queue for
+    # the contaminated list). Off until the migration window opens
+    # (kline_rebuild_enabled) and self-drains once every stock is done.
+    if settings.kline_rebuild_enabled:
+        from app.data.kline_rebuild import tick as kline_rebuild_tick
+
+        sched.add_job(
+            kline_rebuild_tick,
+            IntervalTrigger(
+                minutes=settings.kline_rebuild_poll_minutes,
+                jitter=max(60, settings.kline_rebuild_poll_minutes * 12),
+            ),
+            id="kline_rebuild_tick",
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=300,
+            max_instances=1,
+        )
+        logger.info(
+            "kline rebuild polling job registered (every %d min)",
+            settings.kline_rebuild_poll_minutes,
         )
     # Surface misfires/exceptions to the log explicitly (APScheduler otherwise
     # only emits a generic "was missed" line) so we can see *why* a job skipped.

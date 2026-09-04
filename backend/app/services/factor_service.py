@@ -62,8 +62,13 @@ def compute_series(
     ]
 
 
-def _universe_codes(db: Session, trade_date: date) -> list[str]:
-    """The IC universe: codes with valid close on/around trade_date."""
+def _universe_codes(db: Session, trade_date: date, pool: str = "current") -> list[str]:
+    """The IC universe: codes with valid close on/around trade_date.
+
+    ``pool="pit"`` (V2.1) restricts to the point-in-time universe from
+    ``sa_stock_lifecycle`` — includes stocks that were listed then but
+    delisted since (survivorship-bias fix).
+    """
     latest = db.execute(
         select(func.max(DailyPrice.trade_date)).where(
             DailyPrice.trade_date <= trade_date
@@ -71,7 +76,16 @@ def _universe_codes(db: Session, trade_date: date) -> list[str]:
     ).scalar()
     if latest is None:
         return []
-    rows = db.execute(
+
+    base_codes: set[str] | None = None
+    if pool == "pit":
+        from app.services import universe_service
+
+        base_codes = set(universe_service.get_pool_asof(db, trade_date))
+        if not base_codes:
+            return []
+
+    stmt = (
         select(DailyPrice.stock_code)
         .where(
             DailyPrice.trade_date == latest,
@@ -79,13 +93,42 @@ def _universe_codes(db: Session, trade_date: date) -> list[str]:
             DailyPrice.amount.is_not(None),
         )
         .order_by(DailyPrice.amount.desc())
-        .limit(_IC_UNIVERSE)
-    ).scalars().all()
-    return list(rows)
+        .limit(_IC_UNIVERSE * 3 if base_codes is not None else _IC_UNIVERSE)
+    )
+    if base_codes is not None:
+        # PIT pool: widen the candidate scan, then intersect (delisted codes
+        # rank low/absent by current amount, so the plain top-N under-samples).
+        rows = db.execute(stmt).scalars().all()
+        pit_ranked = [c for c in rows if c in base_codes]
+        # codes in the PIT pool with bars that day but outside the amount scan
+        extra = db.execute(
+            select(DailyPrice.stock_code)
+            .where(
+                DailyPrice.trade_date == latest,
+                DailyPrice.close.is_not(None),
+                DailyPrice.stock_code.in_(list(base_codes)),
+            )
+            .order_by(DailyPrice.amount.desc())
+            .limit(_IC_UNIVERSE)
+        ).scalars().all()
+        seen, merged = set(pit_ranked), pit_ranked
+        for c in extra:
+            if c not in seen:
+                merged.append(c)
+                seen.add(c)
+        return merged[:_IC_UNIVERSE]
+    return list(db.execute(stmt).scalars().all())
 
 
 def compute_ic(
-    db: Session, factor_code: str, trade_date: date, horizon: int = 5
+    db: Session,
+    factor_code: str,
+    trade_date: date,
+    horizon: int = 5,
+    pool: str = "current",
+    exclude_st: bool = False,
+    exclude_suspended: bool = False,
+    only_tradable: bool = False,
 ) -> dict | None:
     """IC / IR / layered returns for a factor on one rebalance date.
 
@@ -93,6 +136,11 @@ def compute_ic(
     heavy), this computes a *single-date* IC: factor snapshot vs forward
     ``horizon``-day returns across the universe. ``ir`` and ``win_rate`` are
     derived from that snapshot's sign agreement.
+
+    V2.1 sample governance: ``pool="pit"`` swaps the universe to the
+    point-in-time pool; the three flags drop ST / suspended / untradable
+    codes via :mod:`app.services.sample_filters` (defaults keep the exact
+    V2 behaviour).
     """
     f = registry.get(factor_code)
     if f is None:
@@ -122,7 +170,17 @@ def compute_ic(
         )
         trade_date = latest_ok
 
-    codes = _universe_codes(db, trade_date)
+    codes = _universe_codes(db, trade_date, pool=pool)
+    filter_meta = None
+    if exclude_st or exclude_suspended or only_tradable:
+        from app.services import sample_filters
+
+        codes, filter_meta = sample_filters.apply_sample_filters(
+            db, codes, trade_date,
+            exclude_st=exclude_st,
+            exclude_suspended=exclude_suspended,
+            only_tradable=only_tradable,
+        )
     if len(codes) < 10:
         logger.warning("ic: universe too small (%d), skipping", len(codes))
         return None
@@ -205,6 +263,8 @@ def compute_ic(
         "win_rate": round(win_rate, 4) if win_rate is not None else None,
         "layered_returns": layered,
         "universe_size": len(fv_series),
+        "pool": pool,
+        "sample_filter": filter_meta,
     }
 
 
@@ -213,6 +273,10 @@ def multi_factor_score(
     factors: list[dict],  # [{"code": "pe", "weight": 1.0}, ...]
     trade_date: date,
     universe_size: int = 200,
+    pool: str = "current",
+    exclude_st: bool = False,
+    exclude_suspended: bool = False,
+    only_tradable: bool = False,
 ) -> list[dict]:
     """Weighted multi-factor score → ranked stock list (BP-V2-004).
 
@@ -220,8 +284,20 @@ def multi_factor_score(
     comparable), then weighted-summed. Higher score = better (caller may want
     to flip sign for "lower is better" factors — left to the caller via weight
     sign).
+
+    V2.1 sample governance params mirror :func:`compute_ic`.
     """
-    codes = _universe_codes(db, trade_date)[:universe_size]
+    codes = _universe_codes(db, trade_date, pool=pool)
+    if exclude_st or exclude_suspended or only_tradable:
+        from app.services import sample_filters
+
+        codes, _ = sample_filters.apply_sample_filters(
+            db, codes, trade_date,
+            exclude_st=exclude_st,
+            exclude_suspended=exclude_suspended,
+            only_tradable=only_tradable,
+        )
+    codes = codes[:universe_size]
     if not codes:
         return []
 
