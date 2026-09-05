@@ -6,11 +6,10 @@ Two layers:
 """
 
 from datetime import date
+import math
 
-import pytest
 
 from app.factor import registry
-from app.factor.base import Factor, FactorParam
 
 
 # --- registry (pure) ------------------------------------------------------
@@ -91,8 +90,27 @@ def test_supertrend_is_sign(db_session):
     assert v in (None, 1.0, -1.0, 0.0)
 
 
+def test_supertrend_flips_on_crash(db_session):
+    """Regression (ratchet fix): 300328's June-2026 crash (close 19.28 → 14.06
+    over 6/17–6/29) must flip SuperTrend to -1. The old no-ratchet version
+    let the stop line retreat with price and stayed +1 through the crash."""
+    f = registry.get("supertrend")
+    assert f.compute(db_session, "300328", date(2026, 6, 23)) == 1.0  # before the break
+    assert f.compute(db_session, "300328", date(2026, 6, 25)) == -1.0  # close 17.02 breaks the stop
+    assert f.compute(db_session, "300328", date(2026, 6, 29)) == -1.0
+
+
 def test_vol_ratio_positive(db_session):
     f = registry.get("vol_ratio5")
     v = f.compute(db_session, "600519", date(2026, 7, 28))
     if v is not None:
         assert v >= 0
+
+
+def test_cci14_compute_real(db_session):
+    """Regression: cci14 raised AttributeError (ndarray has no .abs) since
+    inception and never produced a value; it must compute to a finite number."""
+    f = registry.get("cci14")
+    v = f.compute(db_session, "600519", date(2026, 7, 28))
+    assert v is not None
+    assert math.isfinite(v)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -91,7 +92,7 @@ class CciFactor(Factor):
         tp = (highs + lows + closes) / 3.0
         ma_tp = tp.rolling(window=period, min_periods=period).mean()
         md = tp.rolling(window=period, min_periods=period).apply(
-            lambda x: (x - x.mean()).abs().mean(), raw=True
+            lambda x: np.abs(x - x.mean()).mean(), raw=True
         )
         cci = (tp - ma_tp) / (0.015 * md)
         return _last_or_none(cci)
