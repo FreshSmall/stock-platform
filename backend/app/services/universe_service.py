@@ -110,11 +110,15 @@ def get_industry(db: Session, codes: list[str], asof: date | None = None) -> dic
 
     Prefers rows with a real board code (``BK…``) over the legacy name-space
     fallback (``em:<name>``), latest effective date ≤ ``asof`` wins.
+
+    Fallback (V2.2): the table's history starts at the first sync (2026-08-31
+    seed) — for ``asof`` dates before that there are no PIT rows at all.
+    Industry membership is slow-moving, so in that case the EARLIEST snapshot
+    is used instead. Strict-PIT purists should wait for history to
+    accumulate; until then this keeps neutralization usable.
     """
     if not codes:
         return {}
-    from sqlalchemy import and_
-
     from app.models.kline import SaIndustryMap
 
     stmt = (
@@ -132,6 +136,23 @@ def get_industry(db: Session, codes: list[str], asof: date | None = None) -> dic
     )
     best: dict[str, str] = {}
     for code, ind_code, ind_name, _eff in db.execute(stmt).all():
+        prefer = not ind_code.startswith("em:")
+        if code not in best or prefer:
+            best[code] = ind_name
+    if best:
+        return best
+
+    # No PIT rows at all for this asof → fall back to the earliest snapshot.
+    fallback = (
+        select(
+            SaIndustryMap.stock_code,
+            SaIndustryMap.industry_code,
+            SaIndustryMap.industry_name,
+        )
+        .where(SaIndustryMap.stock_code.in_(codes))
+        .order_by(SaIndustryMap.effective_date.asc())
+    )
+    for code, ind_code, ind_name in db.execute(fallback).all():
         prefer = not ind_code.startswith("em:")
         if code not in best or prefer:
             best[code] = ind_name

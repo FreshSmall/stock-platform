@@ -96,6 +96,32 @@ class VolPriceFactor(Factor):
         return 0.0
 
 
+class AmtFactor(Factor):
+    """N-day average daily traded amount, close*volume as the amount proxy.
+
+    The liquidity factor: strongest IC name in the 2026-08 full-market survey
+    (negative direction — low-liquidity premium). Uses close×volume because
+    the amount column is 79% missing historically (V2.1 T1.8 backfill pending);
+    consistent units across stocks make it valid for cross-sectional ranking.
+    """
+
+    code = "amt20"
+    name = "20日均成交额"
+    category = "volume"
+    params = [FactorParam("period", 20, min=5, max=120, description="均额窗口")]
+
+    def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
+        period = self.default_kwargs()["period"]
+        rows = market_service.get_kline(db, stock, end=trade_date)
+        r = [x for x in rows if x.close is not None and x.volume is not None]
+        if len(r) < period:
+            return None
+        closes = pd.Series([float(x.close) for x in r], dtype=float).tail(period)
+        vols = pd.Series([float(x.volume) for x in r], dtype=float).tail(period)
+        v = float((closes * vols).mean())
+        return v if v > 0 else None
+
+
 registry.register(ObvFactor())
 for _p in (5, 10):
     _f = VolRatioFactor()
@@ -105,3 +131,4 @@ for _p in (5, 10):
     registry.register(_f)
 registry.register(TurnoverFactor())
 registry.register(VolPriceFactor())
+registry.register(AmtFactor())

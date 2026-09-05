@@ -56,7 +56,7 @@ class RocFactor(Factor):
     code = "roc12"
     name = "ROC变动率"
     category = "momentum"
-    params = [FactorParam("period", 12, min=1, max=60, description="回看周期")]
+    params = [FactorParam("period", 12, min=1, max=250, description="回看周期")]
 
     def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
         period = self.default_kwargs()["period"]
@@ -98,7 +98,7 @@ class CciFactor(Factor):
         return _last_or_none(cci)
 
 
-for _p in (6, 12, 24):
+for _p in (6, 12, 14, 24):
     _f = RsiFactor()
     _f.code = f"rsi{_p}"
     _f.name = f"RSI{_p}相对强弱"
@@ -106,5 +106,12 @@ for _p in (6, 12, 24):
     registry.register(_f)
 
 registry.register(KdjKFactor())
-registry.register(RocFactor())
+# roc12 (short momentum) + roc120 (long-horizon reversal — the strongest
+# negative-IC name in the 2026-08 full-market survey).
+for _p in (12, 120):
+    _f = RocFactor()
+    _f.code = f"roc{_p}"
+    _f.name = f"ROC{_p}变动率"
+    _f.params = [FactorParam("period", _p, min=1, max=250, description="回看周期")]
+    registry.register(_f)
 registry.register(CciFactor())

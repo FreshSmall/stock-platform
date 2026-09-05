@@ -57,7 +57,12 @@ class SaFactorIc(Base):
     """Factor effectiveness test result for one rebalance date + horizon.
 
     IC = Spearman rank correlation between the factor value and the forward
-    N-day return across the stock universe. IR = mean(IC) / std(IC).
+    N-day return across the stock universe. IR = mean(IC) / std(IC) — a
+    per-series statistic, so per-date rows store NULL and callers aggregate.
+
+    V2.2: ``pool`` / ``neutralized`` scope the row to a sample 口径 so the
+    same (factor, date, horizon) can coexist under different universes
+    (current/pit) and neutralization modes (none/industry/industry_mcap).
     """
 
     __tablename__ = "sa_factor_ic"
@@ -66,6 +71,12 @@ class SaFactorIc(Base):
     factor_code: Mapped[str] = mapped_column(String(30), nullable=False)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     horizon: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    pool: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="current", server_default="current"
+    )
+    neutralized: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none", server_default="none"
+    )
     ic: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
     ir: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
     win_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4))
@@ -73,7 +84,12 @@ class SaFactorIc(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "factor_code", "trade_date", "horizon", name="uk_factor_date_horizon"
+            "factor_code",
+            "trade_date",
+            "horizon",
+            "pool",
+            "neutralized",
+            name="uk_factor_date_horizon_scope",
         ),
     )
 

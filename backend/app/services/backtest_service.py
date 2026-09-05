@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session
 from app.models.backtest import SaBacktestResult, SaBacktestRun
 from app.models.stock import DailyPrice
 from app.services import market_service
+from app.services.cost_model import AShareCommission, CostParams
 from app.strategy import registry
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,72 @@ logger = logging.getLogger(__name__)
 # A backtest needs enough warmup bars for the slowest default indicator (the
 # 20-period slow SMA) plus a handful of trading bars; 30 is a safe floor.
 _MIN_BARS = 30
+
+
+class _AllInOutSizer(bt.Sizer):
+    """V2.2 position model: buy with ~98% of available cash, sell the whole
+    position.
+
+    Replaces backtrader's default FixedSize(stake=1) — without a sizer every
+    strategy traded exactly ONE share per signal, making return_rate a
+    per-share P&L divided by initial_cash (misleading). Sell sizing returns
+    the full open position so signal-sell closes it.
+    """
+
+    def _getsizing(self, comminfo, cash, data, isbuy):
+        if isbuy:
+            price = data.close[0]
+            if price <= 0:
+                return 0
+            return int((cash * 0.98) / price)
+        position = self.broker.getposition(data)
+        return abs(position.size)
+
+
+def _build_trademap(db: Session, code: str, rows) -> dict:
+    """Per-date buy/sell permissions for the backtest window (V2.2 T2.2).
+
+    Priority: ``sa_daily_trade_status`` (buy_tradable / sell_tradable — covers
+    suspension and one-word limit boards). Dates without a status row fall
+    back to K-line inference: zero/missing volume blocks both sides; a
+    close-to-close move ≥ 9.5% blocks the losing-touch side (can't chase a
+    limit-up close, can't exit into a limit-down close).
+    """
+    from app.models.kline import SaDailyTradeStatus
+
+    status = {
+        r.trade_date: r
+        for r in db.execute(
+            select(SaDailyTradeStatus).where(
+                SaDailyTradeStatus.stock_code == code,
+                SaDailyTradeStatus.trade_date >= rows[0].trade_date,
+                SaDailyTradeStatus.trade_date <= rows[-1].trade_date,
+            )
+        )
+        .scalars()
+        .all()
+    }
+    out: dict = {}
+    for r in rows:
+        st = status.get(r.trade_date)
+        if st is not None:
+            out[r.trade_date] = {
+                "buy": st.buy_tradable != 0,
+                "sell": st.sell_tradable != 0,
+            }
+            continue
+        buy = sell = True
+        vol = float(r.volume) if r.volume is not None else None
+        pct = float(r.pct_change) if r.pct_change is not None else None
+        if vol is not None and vol <= 0:
+            buy = sell = False
+        if pct is not None:
+            if pct >= 9.5:
+                buy = False
+            elif pct <= -9.5:
+                sell = False
+        out[r.trade_date] = {"buy": buy, "sell": sell}
+    return out
 
 
 class _TradeRecorder(bt.Analyzer):
@@ -162,11 +229,17 @@ def run_backtest(
 
     cerebro = bt.Cerebro(stdstats=False)
     cerebro.broker.setcash(float(initial_cash))
-    cerebro.broker.setcommission(commission=float(commission))
+    # V2.2: asymmetric A-share fees (stamp duty on sells, per-order minimum
+    # commission) replace the symmetric setcommission.
+    cerebro.broker.addcommissioninfo(AShareCommission(commission=float(commission)))
     cerebro.broker.set_slippage_perc(perc=float(slippage))
+    cerebro.addsizer(_AllInOutSizer)  # V2.2: position model (was 1 share/fix)
     data = bt.feeds.PandasData(dataname=df)
     cerebro.adddata(data)
     cerebro.addstrategy(meta.cls, **params)
+    # V2.2 T2.2: per-date tradability (suspension / limit boards); strategy
+    # base buy()/sell() consult this map and skip orders on blocked days.
+    cerebro.trademap = _build_trademap(db, code, rows)
 
     # V2: optional benchmark comparison. ``benchmark`` may be either a stock/ETF
     # code present in daily_prices, or an index code from sa_index_quote
@@ -241,7 +314,6 @@ def run_backtest(
     ta = strat.analyzers.trades.get_analysis()
     closed = ta.get("total", {}).get("closed", 0) or 0
     won = ta.get("won", {}).get("total", 0) or 0
-    lost = ta.get("lost", {}).get("total", 0) or 0
     trade_count = int(closed)
     win_rate = (won / closed * 100.0) if closed > 0 else 0.0
 
@@ -363,6 +435,14 @@ def create_backtest_run(db: Session, user_id: int | None, req: dict) -> SaBackte
         k: bool(req.get(k, False))
         for k in ("exclude_st", "exclude_suspended", "only_tradable")
     }
+    # V2.2: fee-schedule provenance (stamp duty / minimum commission / transfer
+    # fee are engine-level constants; commission & slippage are run columns).
+    _cp = CostParams()
+    params["_cost"] = {
+        "stamp_duty": _cp.stamp_duty_rate,
+        "min_commission": _cp.min_commission,
+        "transfer_fee": _cp.transfer_fee_rate,
+    }
     run = SaBacktestRun(
         run_id=run_id,
         user_id=user_id,
@@ -397,6 +477,7 @@ def execute_and_store(db: Session, run: SaBacktestRun) -> SaBacktestResult:
         benchmark = strategy_params.pop("benchmark", None)
         # V2.1 sample governance: gate the single-stock target at the window's
         # first bar. (Per-day matching constraints are V2.2 T2.2 scope.)
+        strategy_params.pop("_cost", {})  # provenance only — not a strategy kwarg
         flags = strategy_params.pop("_sample", {})
         if any(bool(v) for v in flags.values()) and run.stock_pool:
             from app.services import sample_filters

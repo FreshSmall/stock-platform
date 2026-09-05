@@ -30,5 +30,39 @@ class BaseStrategy(bt.Strategy):
         # subclasses call super().__init__() after setting their indicators
         pass
 
+    def _tradable(self, side: str) -> bool:
+        """V2.2 T2.2: per-date tradability check (suspension / limit boards).
+
+        The engine attaches ``cerebro.trademap`` ({date: {"buy","sell"}});
+        missing map or missing date defaults to tradable (no restriction
+        known). Subclasses never call this directly — buy()/sell() guard it.
+        """
+        tm = getattr(self.cerebro, "trademap", None)
+        if not tm:
+            return True
+        info = tm.get(self.datas[0].datetime.date(0))
+        if not info:
+            return True
+        return bool(info.get(side, True))
+
+    def buy(self, *args, **kwargs):
+        """Order a BUY unless today is untradable (suspension / limit-up).
+
+        Returning None (no order) on a blocked day models "couldn't get
+        filled" — the signal is consumed, exactly as in live trading.
+        """
+        if not self._tradable("buy"):
+            return None
+        return super().buy(*args, **kwargs)
+
+    def sell(self, *args, **kwargs):
+        """Order a SELL unless today is untradable (suspension / limit-down).
+        Positions carried through blocked days resume selling when the
+        restriction lifts (or the strategy's next exit signal fires).
+        """
+        if not self._tradable("sell"):
+            return None
+        return super().sell(*args, **kwargs)
+
     def next(self):
         raise NotImplementedError
