@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Form,
@@ -10,6 +11,7 @@ import {
   InputNumber,
   Modal,
   Row,
+  Select,
   Skeleton,
   Space,
   Statistic,
@@ -29,6 +31,15 @@ import {
   getPortfolio,
   listPortfolios,
 } from '../api/portfolio';
+import {
+  listFactorPresets,
+  portfolioBacktest,
+} from '../api/factor';
+import type {
+  FactorPreset,
+  MfPortfolioBacktest,
+  SampleFilters,
+} from '../api/factor';
 import type { Portfolio, PortfolioHolding } from '../api/types';
 import { colorForChange, fmtPct } from '../utils/format';
 import EmptyState from '../components/EmptyState';
@@ -62,6 +73,9 @@ export default function Portfolio() {
 
   return (
     <Row gutter={[16, 16]}>
+      <Col span={24}>
+        <MfPortfolioBacktestCard />
+      </Col>
       <Col span={24}>
         <Card
           title="我的组合"
@@ -427,5 +441,257 @@ function CreatePortfolioModal({
       </Form>
       {error && <Alert type="error" showIcon message={error} style={{ marginTop: 8 }} />}
     </Modal>
+  );
+}
+
+// V2.2 (BP-V2.2-005) — 多因子组合回测：多因子打分 → 定期调仓 → 净值/换手/成本/持仓。
+// 配置（预设或自定义因子）提交 POST /factor/portfolio-backtest，同步返回完整结果，
+// run_id 落库可经 /backtest/{run_id} 回看。
+function MfPortfolioBacktestCard() {
+  const [preset, setPreset] = useState<string>('v2_reversal');
+  const [range, setRange] = useState<[Dayjs, Dayjs]>([
+    dayjs().subtract(1, 'year'),
+    dayjs(),
+  ]);
+  const [freq, setFreq] = useState<string>('W');
+  const [topN, setTopN] = useState(10);
+  const [cash, setCash] = useState(100000);
+  const [sample, setSample] = useState<SampleFilters>({ pool: 'pit', only_tradable: true });
+  const [result, setResult] = useState<MfPortfolioBacktest | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const presetsQ = useQuery<FactorPreset[]>({
+    queryKey: ['factor', 'presets'],
+    queryFn: listFactorPresets,
+    staleTime: 60 * 60_000,
+  });
+
+  const run = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await portfolioBacktest({
+        preset,
+        start: range[0].format('YYYY-MM-DD'),
+        end: range[1].format('YYYY-MM-DD'),
+        freq,
+        top_n: topN,
+        initial_cash: cash,
+        ...sample,
+      });
+      if (!res) {
+        setError('回测失败：区间过短或因子不支持');
+      } else {
+        setResult(res);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '组合回测失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const navOption = useMemo(() => {
+    if (!result) return {};
+    const dates = result.nav.map((p) => p.date);
+    return {
+      animation: false,
+      legend: { top: 0, fontSize: 10 },
+      grid: { left: 64, right: 24, top: 32, bottom: 40 },
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        splitLine: { lineStyle: { color: '#f0f0f0' } },
+        axisLabel: { fontSize: 10 },
+      },
+      series: [
+        {
+          name: '组合净值',
+          type: 'line',
+          showSymbol: false,
+          data: result.nav.map((p) => p.value),
+        },
+        {
+          name: '基准',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { type: 'dashed' },
+          data: result.benchmark_curve.map((p) => p.value),
+        },
+      ],
+    };
+  }, [result]);
+
+  const m = result?.metrics;
+  const pct = (v: number | null | undefined) =>
+    v == null ? '--' : `${(Number(v) * 100).toFixed(2)}%`;
+
+  return (
+    <Card
+      title="多因子组合回测"
+      extra={
+        <Button size="small" type="primary" loading={loading} onClick={run}>
+          运行回测
+        </Button>
+      }
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space wrap size={12}>
+          <Select
+            value={preset}
+            style={{ minWidth: 180 }}
+            options={(presetsQ.data ?? []).map((p) => ({
+              value: p.name,
+              label: p.title,
+            }))}
+            onChange={setPreset}
+          />
+          <RangePicker
+            size="small"
+            value={range}
+            onChange={(v) => {
+              if (v && v[0] && v[1]) setRange([v[0], v[1]]);
+            }}
+            allowClear={false}
+          />
+          <Select
+            size="small"
+            value={freq}
+            style={{ width: 100 }}
+            options={[
+              { value: 'W', label: '每周调仓' },
+              { value: 'M', label: '每月调仓' },
+              { value: '5', label: '每5日' },
+              { value: '10', label: '每10日' },
+            ]}
+            onChange={setFreq}
+          />
+          <Text type="secondary">Top</Text>
+          <InputNumber
+            size="small"
+            min={5}
+            max={50}
+            value={topN}
+            onChange={(v) => v && setTopN(v)}
+            style={{ width: 64 }}
+          />
+          <Text type="secondary">本金</Text>
+          <InputNumber
+            size="small"
+            min={10000}
+            step={10000}
+            value={cash}
+            onChange={(v) => v && setCash(v)}
+            style={{ width: 110 }}
+          />
+          <Select
+            size="small"
+            value={sample.pool ?? 'current'}
+            style={{ width: 110 }}
+            options={[
+              { value: 'current', label: '当前快照' },
+              { value: 'pit', label: '历史时点(PIT)' },
+            ]}
+            onChange={(v) => setSample((s) => ({ ...s, pool: v }))}
+          />
+          <Select
+            size="small"
+            value={sample.neutralize ?? 'none'}
+            style={{ width: 110 }}
+            options={[
+              { value: 'none', label: '中性化:关' },
+              { value: 'industry', label: '中性化:行业' },
+              { value: 'industry_mcap', label: '中性化:行业+市值' },
+            ]}
+            onChange={(v) => setSample((s) => ({ ...s, neutralize: v }))}
+          />
+          <Checkbox
+            checked={sample.only_tradable ?? true}
+            onChange={(e) =>
+              setSample((s) => ({ ...s, only_tradable: e.target.checked }))
+            }
+          >
+            仅可成交
+          </Checkbox>
+        </Space>
+
+        {error && (
+          <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />
+        )}
+
+        {!result ? (
+          <EmptyState description="选择因子预设与调仓频率，点击「运行回测」——计入佣金/印花税/滑点与涨跌停可成交性约束" />
+        ) : (
+          <>
+            <Row gutter={[12, 12]}>
+              {[
+                { title: '总收益', value: pct(m?.total_return) },
+                { title: '年化', value: pct(m?.ann_return) },
+                { title: '基准收益', value: pct(m?.benchmark_return) },
+                { title: '最大回撤', value: pct(m?.max_drawdown) },
+                { title: '夏普', value: m?.sharpe?.toFixed(2) ?? '--' },
+                { title: '平均换手', value: pct(m?.avg_turnover) },
+                { title: '总成本', value: `¥${Number(m?.total_cost ?? 0).toFixed(0)}` },
+                { title: '调仓次数', value: String(m?.n_rebalances ?? 0) },
+              ].map((it) => (
+                <Col key={it.title} xs={12} sm={6} md={3}>
+                  <Statistic title={it.title} value={it.value} valueStyle={{ fontSize: 16 }} />
+                </Col>
+              ))}
+            </Row>
+            <ReactECharts option={navOption} notMerge lazyUpdate style={{ height: 300 }} />
+            <Table
+              rowKey="rebalance_date"
+              size="small"
+              dataSource={result.rebalances}
+              pagination={{ pageSize: 8, showSizeChanger: false }}
+              columns={[
+                { title: '调仓日', dataIndex: 'rebalance_date', width: 110 },
+                { title: '执行日', dataIndex: 'exec_date', width: 110 },
+                {
+                  title: '买入',
+                  dataIndex: 'buys',
+                  render: (buys: { code: string; shares: number }[]) =>
+                    buys.length
+                      ? buys.map((b) => (
+                          <Tag key={b.code} style={{ margin: 1 }}>
+                            {b.code}×{b.shares}
+                          </Tag>
+                        ))
+                      : '--',
+                },
+                {
+                  title: '卖出',
+                  dataIndex: 'sells',
+                  render: (sells: { code: string; shares: number }[]) =>
+                    sells.length
+                      ? sells.map((x) => (
+                          <Tag key={x.code} color="red" style={{ margin: 1 }}>
+                            {x.code}×{x.shares}
+                          </Tag>
+                        ))
+                      : '--',
+                },
+                {
+                  title: '成本',
+                  dataIndex: 'cost',
+                  align: 'right',
+                  render: (v: number) => `¥${Number(v).toFixed(0)}`,
+                },
+              ]}
+              expandable={{
+                expandedRowRender: (rec) => (
+                  <Text type="secondary">目标组合：{rec.target.join('、')}</Text>
+                ),
+              }}
+            />
+          </>
+        )}
+      </Space>
+    </Card>
   );
 }
