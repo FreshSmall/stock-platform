@@ -115,7 +115,7 @@ POST /api/v1/factor/portfolio-backtest       [新]
 - [x] 全量 pytest + ruff clean
 - [x] 真实数据小规模验证（一个因子 ic-series + 一次组合回测）
 - [ ] Backlog BP-V2.2-001~005 状态更新
-- [ ] 分逻辑 commit 提交推送
+- [x] 分逻辑 commit 提交推送
 
 ### 实际偏差注记（2026-09-05 交付时）
 
@@ -134,3 +134,16 @@ POST /api/v1/factor/portfolio-backtest       [新]
 | backtrader sizer 行为变化 | 现有 4 个回测测试断言的是比率与健全性而非绝对值；如爆改坏则按新语义更新断言 |
 | 迁移唯一键重建 | 表当前零行，ALTER 无数据风险；失败可重放（drop+create uk） |
 | 前端轮询超时（组合回测同步执行偏慢） | universe/区间参数上限校验；复用 backtest 轮询模式 |
+
+## 六、T2.6 / T2.8 增补交付记录（2026-09-05 第二批）
+
+- T2.6（BP-V2.2-006）：`app/ml/evaluation.py`（classification_metrics / by_year /
+  threshold_sweep / calibration_bins / importance_stability 纯函数）+ walk_forward
+  return_folds 折信息 + service `evaluation` 输出块 + 脚本 md/json 双产物。
+  发现并修正：数万并发信号的逐笔全仓复利口径失真 → 报告改用日组合年化
+  （`ann_ret_dailycap`，bt.perf 已注记 total_ret 的适用边界）。
+- T2.8（BP-V2.2-008）：`scripts/generate_research_report.py`，证据全部来自
+  平台服务（ic-series / layered_backtest / run_mf_backtest 含分年窗口），
+  ML 增益引用评估 JSON —— 满足"非一次性脚本支撑"退出标准。
+- T2.7（因子健康度监控）仍为下批次：IC 落库底座已备，差周度调度与预警落库。
+- 全量测试 415 passed；新增 test_meta_label_evaluation.py 7 个纯函数测试。
