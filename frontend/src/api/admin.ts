@@ -85,3 +85,44 @@ export const updateUser = (
   client
     .patch<AdminUserRow>(`/admin/users/${id}`, null, { params: patch })
     .then((r) => r.data);
+
+// --- V2.2 T2.7 factor health ------------------------------------------------
+
+export interface FactorHealthMetric {
+  value: number | null;
+  status: 'pass' | 'warn' | 'fail';
+}
+
+export interface FactorHealthFactor {
+  factor_code: string;
+  check_date: string;
+  metrics: Record<string, FactorHealthMetric>;
+  worst: 'pass' | 'warn' | 'fail';
+}
+
+export interface FactorHealthReport {
+  as_of: string | null;
+  factors: FactorHealthFactor[];
+}
+
+export const fetchFactorHealth = () =>
+  client.get<FactorHealthReport>('/admin/factor-health').then((r) => r.data);
+
+export const runFactorHealthCheck = () =>
+  client
+    .post<{
+      checked: number;
+      rows: number;
+      failed: number;
+      as_of: string;
+      factors: {
+        factor_code: string;
+        icir: number | null;
+        mean_ic_10: number | null;
+        mean_ic_20: number | null;
+        ic_decay: number | null;
+        recent_ic: number | null;
+        statuses: Record<string, 'pass' | 'warn' | 'fail'>;
+      }[];
+    }>('/admin/factor-health/run')
+    .then((r) => r.data);

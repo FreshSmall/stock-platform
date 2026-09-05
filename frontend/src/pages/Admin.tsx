@@ -36,8 +36,9 @@ import type {
 import { useAuthStore } from '../store/authStore';
 import EmptyState from '../components/EmptyState';
 import QualityPanel from '../components/QualityPanel';
+import FactorHealthPanel from '../components/FactorHealthPanel';
 
-type Tab = 'sources' | 'tasks' | 'quality' | 'users';
+type Tab = 'sources' | 'tasks' | 'quality' | 'health' | 'users';
 
 // 管理后台. 仅 admin 可见 (路由层守卫之外再做一次确认).
 // V2.1: 任务页对齐后端 name-based 契约，长任务（重灌/修复/回补）异步提交并
@@ -64,6 +65,7 @@ export default function Admin() {
               options={[
                 { label: '任务', value: 'tasks' },
                 { label: '数据质量', value: 'quality' },
+                { label: '因子健康', value: 'health' },
                 { label: '数据源', value: 'sources' },
                 { label: '用户', value: 'users' },
               ]}
@@ -73,6 +75,7 @@ export default function Admin() {
           {tab === 'sources' && <DataSourcesTable />}
           {tab === 'tasks' && <TasksTable />}
           {tab === 'quality' && <QualityPanel />}
+          {tab === 'health' && <FactorHealthPanel />}
           {tab === 'users' && <UsersTable />}
         </Card>
       </Col>

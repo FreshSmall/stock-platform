@@ -136,6 +136,15 @@ def _register_runners() -> None:
 
     _wrap("amount_backfill", _amount_backfill)
 
+    # --- V2.2 因子健康度监控（BP-V2.2-007 / T2.7）--------------------------
+    from app.services import factor_health_service
+
+    def _factor_health(db) -> int:
+        summary = factor_health_service.run_factor_health_check(db)
+        return int(summary.get("failed", 0))
+
+    _wrap("factor_health_check", _factor_health)
+
 
 # Tasks that must NOT run inside the 300s synchronous deadline — submitted
 # via run_task_async instead (see module docstring).
@@ -211,6 +220,8 @@ TASK_TITLES = {
     "delist_sync": "退市名单/生命周期同步（周六 09:00）",
     "industry_map_sync": "行业映射同步（东财→legacy 兜底，周日 09:00）",
     "amount_backfill": "成交额/换手缺失回补",
+    # V2.2
+    "factor_health_check": "因子健康度周检（IC 衰减/失效预警，周六 09:30）",
 }
 
 

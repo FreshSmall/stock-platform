@@ -394,6 +394,17 @@ def init_scheduler() -> BackgroundScheduler:
             coalesce=True,
             misfire_grace_time=3600,
         )
+    # V2.2 T2.7 factor health patrol — Saturday after delist_sync so the PIT
+    # pool is fresh; results land in sa_data_quality_check (factor_health).
+    sched.add_job(
+        _run_admin_task,
+        CronTrigger(hour=9, minute=30, day_of_week="sat"),
+        args=["factor_health_check"],
+        id="factor_health_check",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
     # Multi-year history back-fill — low-rate polling (anti-ban profile, see
     # app.data.history_backfill). ``jitter`` de-synchronises the tick from any
     # other periodic work; the tick itself skips the 17:15–18:45 daily-sync

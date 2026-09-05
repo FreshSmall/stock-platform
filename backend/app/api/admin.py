@@ -6,7 +6,7 @@ All endpoints under ``/api/v1/admin`` and guarded by ``require_admin_user``.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_db, require_admin_user
+from app.core.deps import get_current_user_id, get_db, require_admin_user
 from app.models.user import SaUser
 from app.services import admin_service
 
@@ -176,6 +176,28 @@ def quality_check_run(
         return _ok(admin_service.run_task("quality_check", triggered_by=f"manual:{user.username}"))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/factor-health")
+def factor_health(
+    db: Session = Depends(get_db),
+    _uid: int = Depends(get_current_user_id),
+) -> dict:
+    """Latest factor-health patrol results (V2.2 T2.7)."""
+    from app.services import factor_health_service
+
+    return _ok(factor_health_service.health_report(db))
+
+
+@router.post("/factor-health/run")
+def run_factor_health(
+    db: Session = Depends(get_db),
+    _uid: int = Depends(get_current_user_id),
+) -> dict:
+    """Trigger the weekly factor-health patrol on demand."""
+    from app.services import factor_health_service
+
+    return _ok(factor_health_service.run_factor_health_check(db))
 
 
 @router.patch("/users/{user_id}")
