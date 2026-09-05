@@ -147,3 +147,8 @@ POST /api/v1/factor/portfolio-backtest       [新]
   ML 增益引用评估 JSON —— 满足"非一次性脚本支撑"退出标准。
 - T2.7（因子健康度监控）仍为下批次：IC 落库底座已备，差周度调度与预警落库。
 - 全量测试 415 passed；新增 test_meta_label_evaluation.py 7 个纯函数测试。
+- T2.7（BP-V2.2-007）补齐（同日第三批）：`factor_health_service`（3 指标巡检，
+  复用 sa_data_quality_rule/check 表族、metric_name 以 `<metric>:<factor>`
+  编码适配原唯一键）+ 周六 09:30 调度 + `/admin/factor-health(-/run)` API +
+  admin 因子健康页签。至此阶段二 8 任务（T2.1~T2.8）全部交付。
+

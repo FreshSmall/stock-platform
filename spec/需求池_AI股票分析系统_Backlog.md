@@ -153,7 +153,7 @@
 | BP-V2.2-004 | 回测中心 | 单策略回测严谨化：A股费率结构 + 涨跌停/停牌可成交性约束 + 仓位模型修复（承接 BP-V2.1-005 欠账）| P0 | 已上线（cost_model：佣金双边万2.5最低5元+印花税卖出万5+过户费+滑点；AShareCommission 按 size 符号非对称计费；BaseStrategy.buy/sell 可成交性守卫（状态表优先，K线推断回退）；AllInOut sizer 替换 1 股仓位 bug。行为变更：历史单策略回测结果不可比）| ROADMAP T2.2 / BP-V2.1-005 |
 | BP-V2.2-005 | 回测中心 | 组合级回测产品化（多因子打分→定期调仓→净值/换手/成本/持仓，service+API+前端）| P0 | 已上线（portfolio_backtest_service：PIT池∩样本过滤∩可成交∩流动性预筛→统一打分→top-N；T+1 开盘撮合、一字板/停牌顺延、整手交易、全成本模型；复用 sa_backtest_run/result 落库（strategy=mf_portfolio）；前端组合页新卡。实测 v2_reversal 周调仓 5 个月 +4.9% vs 基准 +2.7%，总成本 ¥1623）| ROADMAP T2.5 |
 | BP-V2.2-006 | 策略中心 | Meta-Labeling 深化（逐折指标/阈值校准/分年评估报告）| P1 | 已上线（app/ml/evaluation.py 纯函数层：总体/分年 P-R-F1-AUC、阈值扫描（分类×交易双视角、日组合年化口径）、概率校准分桶、特征重要性跨折 CV；接入 /ml/meta-label 响应 evaluation 字段；run_meta_label_full 产出 reports/meta_label_eval_*.md+json。全市场实测：n=65,360 OOS，AUC 0.504，P>0.5 档 PF 1.134 年化 22.4%（日组合）；校准显示概率整体偏乐观——已记录待校准）| ROADMAP T2.6 |
-| BP-V2.2-007 | 策略中心 | 因子健康度监控（周度 IC 调度 + 分年趋势 + 衰减预警落库展示）| P1 | 未启动（下批次）| ROADMAP T2.7 |
+| BP-V2.2-007 | 策略中心 | 因子健康度监控（周度 IC 调度 + 分年趋势 + 衰减预警落库展示）| P1 | 已上线（factor_health_service：周六 09:30 巡检 + admin 手动；3 指标（|ICIR|/IC衰减/近季IC）复用质量检查表族落库（metric_name 编码因子）；admin「因子健康」页签红绿灯。首跑结论：amt20 |ICIR|0.345 达标但近季 IC -0.145 疲态、roc120 ICIR 0.02 近失效、4/5 因子近季告警——与研究报告 2025~2026 超额转负互证）| ROADMAP T2.7 |
 | BP-V2.2-008 | 策略中心 | 《选股策略研究报告》v1（成本后收益/分年稳健性/局限性声明）| P1 | 已上线 v1（scripts/generate_research_report.py 全部证据来自平台服务可复现：IC 序列+分层+组合回测（含 4 个分年窗口）+ ML 评估 JSON 引用；产物 reports/stock_strategy_research_report_v1_*.md。v1 结论：v2_reversal 两年 +91.96% vs 基准 +42.10%，4 个分年窗口 3 年正超额；数据重灌收官后应重跑复验）| ROADMAP T2.8 |
 
 ## 六、V3 需求（AI 深度化与交易）
