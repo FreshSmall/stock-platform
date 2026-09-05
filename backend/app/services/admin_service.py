@@ -149,6 +149,7 @@ def _register_runners() -> None:
 # Tasks that must NOT run inside the 300s synchronous deadline — submitted
 # via run_task_async instead (see module docstring).
 _LONG_TASKS = {
+    "factor_health_check",  # V2.2 T2.7: 5-factor IC patrol ≈ 1 min > 30s axios budget
     "daily_k_repair",
     "kline_rebuild_batch",
     "trade_status_backfill",

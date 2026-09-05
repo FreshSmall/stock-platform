@@ -1,9 +1,11 @@
+import { useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Space, Table, Tag, Tooltip, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   fetchFactorHealth,
+  getRun,
   runFactorHealthCheck,
 } from '../api/admin';
 import type {
@@ -35,18 +37,52 @@ const METRIC_HINTS: Record<string, string> = {
 
 export default function FactorHealthPanel() {
   const qc = useQueryClient();
+  const [patrolling, setPatrolling] = useState(false);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const q = useQuery({
     queryKey: ['factor-health'],
     queryFn: fetchFactorHealth,
   });
+
+  // 巡检 ≈ 1 分钟（5 因子 × IC 序列），走长任务链路：提交 → 轮询 run 状态
+  // → 完成后刷新报告。轮询挂在组件 ref 上，卸载时清理。
+  const pollRun = (runId: number) => {
+    pollTimer.current = setTimeout(async () => {
+      try {
+        const run = await getRun(runId);
+        if (run.status === 'running') {
+          pollRun(runId);
+          return;
+        }
+        if (run.status === 'success') {
+          message.success('因子健康度巡检完成');
+          qc.invalidateQueries({ queryKey: ['factor-health'] });
+        } else {
+          message.error(`巡检失败：${run.error ?? '未知错误'}`);
+        }
+      } catch {
+        message.error('巡检状态查询失败');
+      } finally {
+        setPatrolling(false);
+      }
+    }, 5000);
+  };
+
   const runMut = useMutation({
     mutationFn: runFactorHealthCheck,
-    onSuccess: () => {
-      message.success('因子健康度巡检完成');
-      qc.invalidateQueries({ queryKey: ['factor-health'] });
+    onSuccess: (data) => {
+      if (data && typeof data === 'object' && 'run_id' in data) {
+        setPatrolling(true);
+        message.info('巡检已提交，后台执行中（约 1 分钟）…');
+        pollRun(data.run_id);
+      } else {
+        // 同步兜底（理论上不会走到）
+        message.success('因子健康度巡检完成');
+        qc.invalidateQueries({ queryKey: ['factor-health'] });
+      }
     },
     onError: (e: unknown) =>
-      message.error(e instanceof Error ? e.message : '巡检失败'),
+      message.error(e instanceof Error ? e.message : '巡检提交失败'),
   });
 
   const columns: ColumnsType<FactorHealthFactor> = [
@@ -91,7 +127,7 @@ export default function FactorHealthPanel() {
         <Space>
           <Button
             size="small"
-            loading={runMut.isPending}
+            loading={runMut.isPending || patrolling}
             onClick={() => runMut.mutate()}
           >
             立即巡检

@@ -108,21 +108,9 @@ export interface FactorHealthReport {
 export const fetchFactorHealth = () =>
   client.get<FactorHealthReport>('/admin/factor-health').then((r) => r.data);
 
+// 提交后立即返回 {run_id, async: true}；轮询 getRun(runId) 至非 running，
+// 完成后重新拉取 fetchFactorHealth。
 export const runFactorHealthCheck = () =>
   client
-    .post<{
-      checked: number;
-      rows: number;
-      failed: number;
-      as_of: string;
-      factors: {
-        factor_code: string;
-        icir: number | null;
-        mean_ic_10: number | null;
-        mean_ic_20: number | null;
-        ic_decay: number | null;
-        recent_ic: number | null;
-        statuses: Record<string, 'pass' | 'warn' | 'fail'>;
-      }[];
-    }>('/admin/factor-health/run')
+    .post<{ run_id: number; async: boolean }>('/admin/factor-health/run')
     .then((r) => r.data);

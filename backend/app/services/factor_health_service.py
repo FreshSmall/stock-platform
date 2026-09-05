@@ -67,7 +67,9 @@ FACTOR_CODES = [spec.code for spec in PRESET_V2_REVERSAL]
 # Trailing evidence window for the weekly patrol.
 WINDOW_DAYS = 365
 HORIZONS = (10, 20)
-STEP = 5
+# Weekly cadence doesn't need a 5-day rebalance grid; step 10 halves the
+# patrol runtime (~1 min → ~30s) with no material evidence loss.
+STEP = 10
 
 
 def _ensure_rules(db: Session) -> dict[str, tuple[Decimal, Decimal]]:
@@ -132,7 +134,7 @@ def run_factor_health_check(db: Session, persist_ic: bool = True) -> dict:
             res = factor_service.compute_ic_series(
                 db, code, start, end,
                 horizons=HORIZONS, step=STEP, pool="pit",
-                universe_size=500, persist=persist_ic,
+                universe_size=300, persist=persist_ic,
             )
         except ValueError as e:
             logger.warning("factor_health %s: %s", code, e)

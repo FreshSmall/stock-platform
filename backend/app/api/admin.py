@@ -190,14 +190,18 @@ def factor_health(
 
 
 @router.post("/factor-health/run")
-def run_factor_health(
-    db: Session = Depends(get_db),
-    _uid: int = Depends(get_current_user_id),
-) -> dict:
-    """Trigger the weekly factor-health patrol on demand."""
-    from app.services import factor_health_service
+def run_factor_health(user: SaUser = Depends(require_admin_user)) -> dict:
+    """Trigger the weekly factor-health patrol on demand.
 
-    return _ok(factor_health_service.run_factor_health_check(db))
+    The patrol (5 factors × multi-horizon IC series) runs about a minute —
+    beyond the frontend's 30s axios budget — so it submits as a V2.1-style
+    long task; poll ``GET /admin/tasks/runs/{run_id}`` until it leaves
+    ``running``, then refetch ``GET /admin/factor-health``.
+    """
+    run_id = admin_service.run_task_async(
+        "factor_health_check", triggered_by=f"manual:{user.username}"
+    )
+    return _ok({"run_id": run_id, "async": True}, msg="submitted")
 
 
 @router.patch("/users/{user_id}")
