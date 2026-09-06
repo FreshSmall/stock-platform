@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -27,6 +27,7 @@ import {
   testDatasource,
   updateUser,
 } from '../api/admin';
+import { runPaperTickAll } from '../api/paper';
 import type {
   AdminUserRow,
   DataSourceRow,
@@ -169,6 +170,50 @@ function TasksTable() {
     onError: (e) => message.error(e instanceof Error ? e.message : '执行失败'),
   });
 
+  // V3a paper_tick（模拟盘推进）：与 factor-health run 相同的长任务模式——
+  // 提交 POST /admin/paper/run → {run_id, async} → 轮询 getRun 至非 running。
+  // TODO(backend): 后续波次按同模式挂载 /admin/paper/run。
+  const [paperTicking, setPaperTicking] = useState(false);
+  const paperTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const pollPaperRun = (runId: number) => {
+    paperTimer.current = setTimeout(async () => {
+      try {
+        const run = await getRun(runId);
+        if (run.status === 'running') {
+          pollPaperRun(runId);
+          return;
+        }
+        if (run.status === 'success') {
+          message.success('模拟盘推进完成');
+          qc.invalidateQueries({ queryKey: ['admin', 'tasks'] });
+        } else {
+          message.error(`模拟盘推进失败：${run.error ?? '未知错误'}`);
+        }
+      } catch {
+        message.error('模拟盘推进状态查询失败');
+      } finally {
+        setPaperTicking(false);
+      }
+    }, 5000);
+  };
+
+  const paperTickMut = useMutation({
+    mutationFn: runPaperTickAll,
+    onSuccess: (r) => {
+      if (r && typeof r === 'object' && 'run_id' in r) {
+        setPaperTicking(true);
+        message.info('模拟盘推进已提交，后台执行中…');
+        pollPaperRun(r.run_id);
+      } else {
+        message.success('模拟盘推进完成');
+        qc.invalidateQueries({ queryKey: ['admin', 'tasks'] });
+      }
+    },
+    onError: (e: unknown) =>
+      message.error(e instanceof Error ? e.message : '模拟盘推进提交失败'),
+  });
+
   const columns: ColumnsType<TaskRow> = [
     {
       title: '任务名称',
@@ -234,17 +279,41 @@ function TasksTable() {
     },
   ];
 
-  if (isLoading) return <Skeleton active paragraph={{ rows: 4 }} />;
-  if (!data || data.length === 0) return <EmptyState description="暂无任务" />;
   return (
     <>
-      <Table<TaskRow>
-        rowKey="task_name"
-        dataSource={data}
-        columns={columns}
-        pagination={false}
-        size="small"
-      />
+      <div style={{ marginBottom: 12 }}>
+        <Space>
+          <Popconfirm
+            title="确认立即推进所有模拟盘账户（paper_tick）？"
+            onConfirm={() => paperTickMut.mutate()}
+          >
+            <Button
+              size="small"
+              type="primary"
+              loading={paperTickMut.isPending || paperTicking}
+            >
+              模拟盘推进 paper_tick
+            </Button>
+          </Popconfirm>
+          <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+            收盘后推进所有运行中的模拟盘账户：生成信号 → 模拟成交（费用/涨跌停约束）→
+            更新净值与告警
+          </span>
+        </Space>
+      </div>
+      {isLoading ? (
+        <Skeleton active paragraph={{ rows: 4 }} />
+      ) : !data || data.length === 0 ? (
+        <EmptyState description="暂无任务" />
+      ) : (
+        <Table<TaskRow>
+          rowKey="task_name"
+          dataSource={data}
+          columns={columns}
+          pagination={false}
+          size="small"
+        />
+      )}
       <Drawer
         title={`任务进度${current?.task_name ? ` · ${current.task_name}` : ''}`}
         width={460}

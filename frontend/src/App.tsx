@@ -16,6 +16,7 @@ import Backtest from './pages/Backtest';
 import Assistant from './pages/Assistant';
 import Factor from './pages/Factor';
 import Portfolio from './pages/Portfolio';
+import Paper from './pages/Paper';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
 
@@ -52,6 +53,7 @@ export default function App() {
             <Route path="/assistant" element={<Assistant />} />
             <Route path="/factor" element={<Factor />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/paper" element={<Paper />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/" element={<Navigate to="/market" replace />} />
           </Route>

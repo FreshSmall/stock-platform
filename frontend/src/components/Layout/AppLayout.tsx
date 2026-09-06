@@ -6,6 +6,7 @@ import {
   FileTextOutlined,
   FireOutlined,
   FundOutlined,
+  PlayCircleOutlined,
   RobotOutlined,
   SettingOutlined,
   StockOutlined,
@@ -33,6 +34,7 @@ const NAV: NavItem[] = [
   { key: '/strategy', label: '策略', icon: <ThunderboltOutlined /> },
   { key: '/backtest', label: '回测', icon: <LineChartOutlined /> },
   { key: '/portfolio', label: '组合', icon: <FundOutlined /> },
+  { key: '/paper', label: '模拟盘', icon: <PlayCircleOutlined /> },
   { key: '/reports', label: '报告', icon: <FileTextOutlined /> },
   { key: '/assistant', label: '助手', icon: <RobotOutlined /> },
 ];
