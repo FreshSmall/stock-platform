@@ -25,6 +25,13 @@ from app.models.kline import (
     SaKlineSyncState,
     SaStockLifecycle,
 )
+from app.models.paper import (
+    SaPaperAccount,
+    SaPaperNav,
+    SaPaperOrder,
+    SaPaperPosition,
+    SaPaperTrade,
+)
 from app.models.quality import SaDataQualityCheck, SaDataQualityRule
 from app.models.portfolio import SaPortfolio, SaPortfolioHolding
 from app.models.market_data import (
@@ -93,4 +100,10 @@ __all__ = [
     "SaKlineSyncState",
     "SaDataQualityRule",
     "SaDataQualityCheck",
+    # application-managed sa_ tables (V3a 模拟盘)
+    "SaPaperAccount",
+    "SaPaperOrder",
+    "SaPaperTrade",
+    "SaPaperPosition",
+    "SaPaperNav",
 ]
