@@ -37,16 +37,20 @@ from sqlalchemy.orm import Session
 from app.factor import multi_factor
 from app.factor.multi_factor import FactorWeight
 from app.models.backtest import SaBacktestResult, SaBacktestRun
-from app.models.kline import SaDailyTradeStatus
-from app.models.stock import DailyPrice
 from app.services import factor_panel, factor_service
 from app.services.cost_model import CostParams
+from app.services.execution import (
+    board_lot_shares,
+    fetch_open_prices,
+    fetch_tradability,
+    fill_price,
+    match_fill,
+)
 from app.services.factor_panel import MarketPanel
 
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS = 250
-BOARD_LOT = 100  # A-share board lot
 
 
 def _resolve_specs(
@@ -91,45 +95,6 @@ def _rebalance_schedule(
     return list(in_range[::n])
 
 
-def _opens_on(db: Session, codes: list[str], d: pd.Timestamp) -> dict[str, float]:
-    rows = db.execute(
-        select(DailyPrice.stock_code, DailyPrice.open)
-        .where(
-            DailyPrice.trade_date == d.date(),
-            DailyPrice.stock_code.in_(codes),
-            DailyPrice.open.is_not(None),
-        )
-    ).all()
-    return {c: float(o) for c, o in rows}
-
-
-def _sellable_on(
-    db: Session, codes: list[str], d: pd.Timestamp
-) -> dict[str, bool]:
-    """sell permission at ``d`` from sa_daily_trade_status (missing → True)."""
-    rows = db.execute(
-        select(SaDailyTradeStatus.stock_code, SaDailyTradeStatus.sell_tradable)
-        .where(
-            SaDailyTradeStatus.stock_code.in_(codes),
-            SaDailyTradeStatus.trade_date == d.date(),
-        )
-    ).all()
-    return {c: v != 0 for c, v in rows}
-
-
-def _buyable_on(
-    db: Session, codes: list[str], d: pd.Timestamp
-) -> dict[str, bool]:
-    rows = db.execute(
-        select(SaDailyTradeStatus.stock_code, SaDailyTradeStatus.buy_tradable)
-        .where(
-            SaDailyTradeStatus.stock_code.in_(codes),
-            SaDailyTradeStatus.trade_date == d.date(),
-        )
-    ).all()
-    return {c: v != 0 for c, v in rows}
-
-
 def _score_targets(
     db: Session,
     factor_values: dict[str, pd.Series],  # code → cross-section at date t
@@ -152,6 +117,69 @@ def _score_targets(
     directions = {s.code: s.direction for s in specs}
     score = multi_factor.composite_score(frame, weights, directions)
     return list(score.head(top_n).index)
+
+
+def scope_and_score_targets(
+    db: Session,
+    *,
+    t: pd.Timestamp,
+    specs: list[FactorWeight],
+    fp_values: dict[str, pd.DataFrame],
+    amt_panel: pd.DataFrame | None,
+    codes_all: list[str],
+    listed: pd.DataFrame | None,
+    status,
+    top_n: int,
+    neutralize: str,
+    liquidity_top_k: int,
+    exclude_st: bool,
+    exclude_suspended: bool,
+    only_tradable: bool,
+) -> list[str]:
+    """Scope the universe on one rebalance date and score → top-N codes.
+
+    Shared by the backtest loop and the paper-trading signal pass (V3a) so
+    both paths pick identical targets from identical inputs — the foundation
+    of the paper-vs-backtest zero-drift guarantee. Returns [] when the date
+    has no factor evidence or fewer candidates than ``top_n``.
+    """
+    factor_codes = [s.code for s in specs]
+    first = fp_values[factor_codes[0]]
+    if t not in first.index:
+        return []
+    row0 = first.loc[t]
+    candidates = [c for c in codes_all if pd.notna(row0.get(c))]
+    if not candidates:
+        return []
+    amt_row = amt_panel.loc[t] if t in amt_panel.index else None
+    if liquidity_top_k and amt_row is not None:
+        amt = amt_row.reindex(candidates).dropna().sort_values(ascending=False)
+        candidates = list(amt.head(liquidity_top_k).index)
+    if listed is not None and t in listed.index:
+        ok = listed.loc[t].reindex(candidates).fillna(False)
+        candidates = [c for c in candidates if bool(ok.get(c, False))]
+    if status is not None:
+        if exclude_st and status.is_st is not None and t in status.is_st.index:
+            bad = status.is_st.loc[t].reindex(candidates).fillna(False)
+            candidates = [c for c in candidates if not bool(bad.get(c, False))]
+        if (
+            exclude_suspended
+            and status.is_suspended is not None
+            and t in status.is_suspended.index
+        ):
+            bad = status.is_suspended.loc[t].reindex(candidates).fillna(False)
+            candidates = [c for c in candidates if not bool(bad.get(c, False))]
+        if (
+            only_tradable
+            and status.not_tradable is not None
+            and t in status.not_tradable.index
+        ):
+            bad = status.not_tradable.loc[t].reindex(candidates).fillna(False)
+            candidates = [c for c in candidates if not bool(bad.get(c, False))]
+    if len(candidates) < top_n:
+        return []
+    cross = {fc: fp_values[fc].loc[t] for fc in factor_codes}
+    return _score_targets(db, cross, specs, candidates, t, neutralize, top_n)
 
 
 def run_mf_backtest(
@@ -215,42 +243,22 @@ def run_mf_backtest(
     # --- pass 1: targets per rebalance date (scope + score, no execution) ---
     targets_by_t: dict[pd.Timestamp, list[str]] = {}
     for t in reb_dates[:-1]:
-        first = fp_values[factor_codes[0]]
-        if t not in first.index:
-            continue
-        row0 = first.loc[t]
-        candidates = [c for c in codes_all if pd.notna(row0.get(c))]
-        if not candidates:
-            continue
-        amt_row = amt_panel.loc[t] if t in amt_panel.index else None
-        if liquidity_top_k and amt_row is not None:
-            amt = amt_row.reindex(candidates).dropna().sort_values(ascending=False)
-            candidates = list(amt.head(liquidity_top_k).index)
-        if listed is not None and t in listed.index:
-            ok = listed.loc[t].reindex(candidates).fillna(False)
-            candidates = [c for c in candidates if bool(ok.get(c, False))]
-        if status is not None:
-            if exclude_st and status.is_st is not None and t in status.is_st.index:
-                bad = status.is_st.loc[t].reindex(candidates).fillna(False)
-                candidates = [c for c in candidates if not bool(bad.get(c, False))]
-            if (
-                exclude_suspended
-                and status.is_suspended is not None
-                and t in status.is_suspended.index
-            ):
-                bad = status.is_suspended.loc[t].reindex(candidates).fillna(False)
-                candidates = [c for c in candidates if not bool(bad.get(c, False))]
-            if (
-                only_tradable
-                and status.not_tradable is not None
-                and t in status.not_tradable.index
-            ):
-                bad = status.not_tradable.loc[t].reindex(candidates).fillna(False)
-                candidates = [c for c in candidates if not bool(bad.get(c, False))]
-        if len(candidates) < top_n:
-            continue
-        cross = {fc: fp_values[fc].loc[t] for fc in factor_codes}
-        targets = _score_targets(db, cross, specs, candidates, t, neutralize, top_n)
+        targets = scope_and_score_targets(
+            db,
+            t=t,
+            specs=specs,
+            fp_values=fp_values,
+            amt_panel=amt_panel,
+            codes_all=codes_all,
+            listed=listed,
+            status=status,
+            top_n=top_n,
+            neutralize=neutralize,
+            liquidity_top_k=liquidity_top_k,
+            exclude_st=exclude_st,
+            exclude_suspended=exclude_suspended,
+            only_tradable=only_tradable,
+        )
         if targets:
             targets_by_t[t] = targets
 
@@ -281,9 +289,8 @@ def run_mf_backtest(
         if t is not None:
             targets = targets_by_t[t]
             involved = list(set(targets) | set(holdings))
-            opens = _opens_on(db, involved, d)
-            sell_ok = _sellable_on(db, involved, d)
-            buy_ok = _buyable_on(db, involved, d)
+            opens = fetch_open_prices(db, involved, d)
+            sell_ok, buy_ok = fetch_tradability(db, involved, d)
             nav_before = cash + sum(
                 sh * opens.get(c, last_close.get(c, 0.0))
                 for c, sh in holdings.items()
@@ -293,11 +300,13 @@ def run_mf_backtest(
             reb_cost = 0.0
 
             for c in list(holdings):  # sells first (free cash)
-                if c in targets or c not in opens:
+                if c in targets:
                     continue
-                if not sell_ok.get(c, True):
-                    continue  # blocked (一字跌停/停牌) → carry
-                px = opens[c] * (1.0 - cp.slippage_rate)
+                op = opens.get(c)
+                action, _reason = match_fill("sell", op, sell_ok.get(c, True))
+                if action != "fill":
+                    continue  # blocked (一字跌停/停牌/无开盘价) → carry
+                px = fill_price(op, "sell", cp.slippage_rate)
                 shares = holdings.pop(c)
                 amount = shares * px
                 fee = cp.sell_cost(amount)
@@ -313,13 +322,14 @@ def run_mf_backtest(
                 0.0,
             ) / top_n
             for c in targets:  # buys: equal-weight slots at slipped open
-                if c in holdings or c not in opens:
+                if c in holdings:
                     continue
-                if not buy_ok.get(c, True):
+                op = opens.get(c)
+                action, _reason = match_fill("buy", op, buy_ok.get(c, True))
+                if action != "fill":
                     continue  # blocked (一字涨停) → skip this cycle
-                px = opens[c] * (1.0 + cp.slippage_rate)
-                lots = int(per_target / px / BOARD_LOT)
-                shares = lots * BOARD_LOT
+                px = fill_price(op, "buy", cp.slippage_rate)
+                shares = board_lot_shares(per_target, px)
                 if shares <= 0:
                     continue
                 amount = shares * px
