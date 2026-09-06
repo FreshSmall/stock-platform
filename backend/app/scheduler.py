@@ -371,6 +371,9 @@ def init_scheduler() -> BackgroundScheduler:
         # V2.1 样本治理与质量巡检（spec-004）
         ("trade_status_sync", 19, 0),         # after the 17:30 dual-write settles
         ("quality_check", 8, 0),              # next-morning patrol over settled data
+        # V3a 模拟盘日推进（spec-006）：撮合昨日订单→生成今日信号→估值→告警，
+        # 必须排在 17:30 日K 与 19:00 交易状态之后；周末/节假日由 tick 内跳过
+        ("paper_tick", 20, 0),
     ]
     for name, h, m in _v15_jobs:
         sched.add_job(

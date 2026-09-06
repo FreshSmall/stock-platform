@@ -145,11 +145,21 @@ def _register_runners() -> None:
 
     _wrap("factor_health_check", _factor_health)
 
+    # --- V3a 模拟盘日推进（BP-V3a-002/003/006）----------------------------
+    from app.services import paper_service
+
+    def _paper_tick(db) -> int:
+        summary = paper_service.paper_tick_all(db)
+        return int(summary.get("fills", 0))
+
+    _wrap("paper_tick", _paper_tick)
+
 
 # Tasks that must NOT run inside the 300s synchronous deadline — submitted
 # via run_task_async instead (see module docstring).
 _LONG_TASKS = {
     "factor_health_check",  # V2.2 T2.7: 5-factor IC patrol ≈ 1 min > 30s axios budget
+    "paper_tick",  # V3a: signal pass builds a full-market panel, > 30s axios budget
     "daily_k_repair",
     "kline_rebuild_batch",
     "trade_status_backfill",
@@ -223,6 +233,8 @@ TASK_TITLES = {
     "amount_backfill": "成交额/换手缺失回补",
     # V2.2
     "factor_health_check": "因子健康度周检（IC 衰减/失效预警，周六 09:30）",
+    # V3a
+    "paper_tick": "模拟盘日推进（撮合/信号/估值/告警，20:00）",
 }
 
 

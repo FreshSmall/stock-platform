@@ -204,6 +204,21 @@ def run_factor_health(user: SaUser = Depends(require_admin_user)) -> dict:
     return _ok({"run_id": run_id, "async": True}, msg="submitted")
 
 
+@router.post("/paper/run")
+def run_paper_tick(user: SaUser = Depends(require_admin_user)) -> dict:
+    """Trigger the daily paper-trading tick on demand (V3a).
+
+    The signal pass builds a full-market panel (~30s+) so it submits as a
+    long task; poll ``GET /admin/tasks/runs/{run_id}`` until it leaves
+    ``running``. Runs every active account for today (catch-up replays go
+    through ``POST /paper/accounts/{id}/tick``).
+    """
+    run_id = admin_service.run_task_async(
+        "paper_tick", triggered_by=f"manual:{user.username}"
+    )
+    return _ok({"run_id": run_id, "async": True}, msg="submitted")
+
+
 @router.patch("/users/{user_id}")
 def update_user(
     user_id: int,
