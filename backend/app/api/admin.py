@@ -219,6 +219,40 @@ def run_paper_tick(user: SaUser = Depends(require_admin_user)) -> dict:
     return _ok({"run_id": run_id, "async": True}, msg="submitted")
 
 
+# ---- pipeline (V2.5 BP-V2.5-003) ----
+
+
+@router.get("/pipeline/daily")
+def pipeline_daily(
+    date: str | None = Query(None),
+    db: Session = Depends(get_db),
+    _: SaUser = Depends(require_admin_user),
+) -> dict:
+    """One pipeline run with its steps + the day's non-topology tasks.
+
+    ``date`` defaults to the most recent run. Step rows embed their latest
+    ``sa_admin_task_log`` record so the drill-down drawer needs no extra call.
+    """
+    from datetime import date as _date
+
+    from app.services import pipeline_service
+
+    d = _date.fromisoformat(date) if date else None
+    return _ok(pipeline_service.daily_report(db, d))
+
+
+@router.get("/pipeline/summary")
+def pipeline_summary(
+    days: int = Query(30, ge=1, le=180),
+    db: Session = Depends(get_db),
+    _: SaUser = Depends(require_admin_user),
+) -> dict:
+    """Per-run aggregates for the history heat strip (V2.5)."""
+    from app.services import pipeline_service
+
+    return _ok(pipeline_service.summary(db, days))
+
+
 @router.patch("/users/{user_id}")
 def update_user(
     user_id: int,

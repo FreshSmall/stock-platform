@@ -32,6 +32,7 @@ from app.models.paper import (
     SaPaperPosition,
     SaPaperTrade,
 )
+from app.models.pipeline import SaPipelineRun, SaPipelineStep
 from app.models.quality import SaDataQualityCheck, SaDataQualityRule
 from app.models.portfolio import SaPortfolio, SaPortfolioHolding
 from app.models.market_data import (
@@ -106,4 +107,7 @@ __all__ = [
     "SaPaperTrade",
     "SaPaperPosition",
     "SaPaperNav",
+    # application-managed sa_ tables (V2.5 运行可靠性)
+    "SaPipelineRun",
+    "SaPipelineStep",
 ]

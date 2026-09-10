@@ -1,13 +1,18 @@
-"""APScheduler job registration.
+"""APScheduler job registration (V2.5: topology-driven).
 
-Jobs:
-- ``daily_k_sync``: weekdays 17:30 Asia/Shanghai → incremental daily-K sync.
-  Skipped on non-trading days (weekends/holidays via the trade calendar).
-- ``daily_k_sync_retry``: weekdays 23:00 → if today's row count is far below
-  the recent baseline (partial 17:30 run, even across a restart), re-run the
-  full sync; otherwise retry only the codes that failed in the 17:30 run.
-  Skipped (no-op) when the 17:30 run had zero failures, and on non-trading
-  days (a zero count is expected there, not a partial run).
+The cron job list is generated from ``pipeline_service.PIPELINE_TOPOLOGY`` —
+the single source of truth shared with the run/step bookkeeping, the 08:00
+missing-step patrol and the admin pipeline view. Every topology step executes
+through ``admin_service.run_task`` so each firing lands in
+``sa_admin_task_log`` AND in its pipeline step row (scheduler, retry and
+manual triggers share one path). :func:`_cron_job_specs` is the pure manifest
+the topology-consistency test anchors on.
+
+Jobs outside the topology (registered explicitly):
+- ``quality_check``   weekdays 08:00 (guarded by ``quality_check_enabled``);
+- ``history_backfill_tick`` / ``kline_rebuild_tick``  interval polling jobs
+  (per-day summary row in the task log, see admin_service.log_daily_summary);
+- the startup back-fill thread (``app.main`` lifespan).
 
 The scheduler is NOT started on import (that would create side effects and
 background threads during tests / collection). Call :func:`init_scheduler`
@@ -22,6 +27,7 @@ from apscheduler.events import (
     EVENT_JOB_EXECUTED,
     EVENT_JOB_MISSED,
 )
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -52,7 +58,14 @@ def _on_scheduler_event(event) -> None:
             getattr(event, "exception", None),
         )
 
+
 _scheduler: BackgroundScheduler | None = None
+
+
+def get_scheduler() -> BackgroundScheduler | None:
+    """The running scheduler, if initialized (pipeline retries need it)."""
+    return _scheduler
+
 
 # Look-back window for the incremental pull.
 _LOOKBACK_DAYS = 7
@@ -145,18 +158,17 @@ def _sync_codes(db, codes, start: str, end: str) -> tuple[int, list[str]]:
     return total, failed
 
 
-def run_daily_sync() -> None:
-    """Entry point for the 17:30 daily-K sync job (runs in a background thread).
+def _do_daily_sync() -> tuple[int, list[str]]:
+    """Raising core of the 17:30 daily-K sync (V2.5 收口).
 
-    Pulls the most recent pool snapshot's codes and syncs the last
-    ``_LOOKBACK_DAYS`` calendar days for **every** code in the snapshot
-    (full market). Codes that fail are recorded in
-    :data:`_last_run_failed_codes` for the 23:00 retry job.
+    Unlike the historical catch-all wrapper, fatal errors PROPAGATE — the
+    admin-task path needs the failure to reach ``sa_admin_task_log`` / the
+    pipeline step row instead of silently logging ``success``. Per-code
+    failures stay non-fatal (replayed at 23:00); only a TOTAL failure (every
+    code failed, e.g. a WAF ban) raises. Returns ``(rows, failed_codes)``.
     """
     global _last_run_failed_codes
 
-    # Local imports keep module import side-effect-free (no DB/session at
-    # import time) and avoid a circular ref with app.core.database.
     from app.core.database import SessionLocal
     from app.models.stock import StockPool
 
@@ -168,7 +180,7 @@ def run_daily_sync() -> None:
     if not _is_trade_day(today):
         logger.info("daily sync skipped: %s is not a trading day", today)
         _last_run_failed_codes = []
-        return
+        return 0, []
 
     logger.info("daily sync job started (full market)")
     db = SessionLocal()
@@ -179,7 +191,7 @@ def run_daily_sync() -> None:
         if latest_sp is None:
             logger.warning("daily sync: stock_pool empty, nothing to sync")
             _last_run_failed_codes = []
-            return
+            return 0, []
         codes = (
             db.execute(
                 select(StockPool.stock_code).where(
@@ -189,10 +201,8 @@ def run_daily_sync() -> None:
             .scalars()
             .all()
         )
-        end = date.today().strftime("%Y%m%d")
-        start = (date.today() - timedelta(days=_LOOKBACK_DAYS)).strftime(
-            "%Y%m%d"
-        )
+        end = today.strftime("%Y%m%d")
+        start = (today - timedelta(days=_LOOKBACK_DAYS)).strftime("%Y%m%d")
         total, failed = _sync_codes(db, codes, start, end)
         _last_run_failed_codes = failed
         logger.info(
@@ -200,13 +210,30 @@ def run_daily_sync() -> None:
             total,
             len(failed),
         )
+        if codes and failed and len(failed) == len(codes):
+            raise RuntimeError(
+                f"daily_k_sync: all {len(codes)} codes failed (source outage?)"
+            )
+        return total, failed
+    finally:
+        db.close()
+
+
+def run_daily_sync() -> None:
+    """Entry point for the 17:30 daily-K sync job (runs in a background thread).
+
+    Catch-all wrapper around :func:`_do_daily_sync` kept for direct callers
+    (startup back-fill compat, tests). The scheduled path goes through
+    ``admin_service.run_task("daily_k_sync")`` → the raising core, so the
+    outcome lands in the task log and the pipeline step row.
+    """
+    try:
+        _do_daily_sync()
     except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
         # Without this, a DB/network storm (e.g. port exhaustion) propagates to
         # APScheduler and can freeze the scheduler thread — observed freezing
         # all subsequent jobs for 20+ hours. Catch, log, let the next run retry.
         logger.exception("daily sync job failed")
-    finally:
-        db.close()
 
 
 def _today_looks_incomplete() -> bool:
@@ -241,20 +268,13 @@ def _today_looks_incomplete() -> bool:
         db.close()
 
 
-def run_daily_sync_retry() -> None:
-    """Entry point for the 23:00 retry job.
+def _do_daily_sync_retry() -> tuple[int, str]:
+    """Raising core of the 23:00 compensation job (V2.5 收口).
 
-    First a restart-proof self-check: if today's settled-row count is far
-    below the recent baseline, the 17:30 run (or the process) died partway —
-    re-run the FULL sync; the per-code upsert is idempotent so this only
-    costs the redundant fetches.
-
-    Otherwise, replays only the codes recorded in
-    :data:`_last_run_failed_codes` from the 17:30 run. A no-op (just logs)
-    when there were no failures. The failure list is cleared after the run
-    regardless of outcome, so a code that fails twice is not retried a third
-    time automatically — it will be picked up by the next day's full 17:30
-    run.
+    Returns ``(rows, mode)`` where mode is ``full_resync`` (the completeness
+    self-check fired), ``replay`` (failed-code replay) or ``noop``. Fatal
+    errors propagate (admin-task path); a crashing self-check falls through
+    to the replay, same as before.
     """
     global _last_run_failed_codes
 
@@ -264,14 +284,14 @@ def run_daily_sync_retry() -> None:
                 "retry sync: today's daily-K looks incomplete vs recent "
                 "baseline — re-running the full 17:30 sync"
             )
-            run_daily_sync()
-            return
+            rows, _ = _do_daily_sync()
+            return rows, "full_resync"
     except Exception:  # noqa: BLE001 - self-check must not kill the replay below
         logger.exception("retry sync: completeness self-check failed")
 
     if not _last_run_failed_codes:
         logger.info("retry sync skipped: no failed codes from the 17:30 run")
-        return
+        return 0, "noop"
 
     from app.core.database import SessionLocal
 
@@ -280,134 +300,123 @@ def run_daily_sync_retry() -> None:
     db = SessionLocal()
     try:
         end = date.today().strftime("%Y%m%d")
-        start = (date.today() - timedelta(days=_LOOKBACK_DAYS)).strftime(
-            "%Y%m%d"
-        )
+        start = (date.today() - timedelta(days=_LOOKBACK_DAYS)).strftime("%Y%m%d")
         total, still_failing = _sync_codes(db, codes, start, end)
         logger.info(
             "retry sync done: %d rows recovered, %d codes still failing",
             total,
             len(still_failing),
         )
-    except Exception:  # noqa: BLE001 - same rationale as run_daily_sync
-        logger.exception("retry sync job failed")
+        return total, "replay"
     finally:
         db.close()
         _last_run_failed_codes = []
 
 
+def run_daily_sync_retry() -> None:
+    """Catch-all wrapper of the 23:00 compensation job (kept for tests)."""
+    try:
+        _do_daily_sync_retry()
+    except Exception:  # noqa: BLE001 - same rationale as run_daily_sync
+        logger.exception("retry sync job failed")
+
+
+# ---------------------------------------------------------------------------
+# Cron job manifest (pure) + scheduler bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _cron_job_specs() -> list[dict]:
+    """Declarative cron-job manifest — no scheduler instance needed.
+
+    The topology-consistency test asserts that the scheduler registers exactly
+    these ids. Topology steps carry the admin ``task_name`` to execute, which
+    may differ from the job id for variants (the uncapped nightly finance run
+    books into the ``finance_sync`` step via the alias mapping).
+    """
+    from app.services.pipeline_service import PIPELINE_TOPOLOGY
+
+    def _misfire(day_of_week: str) -> int:
+        # Weekend jobs have a longer grace window (nothing else fires around
+        # them); daily data jobs keep the tight 10-min window.
+        return 3600 if day_of_week in ("sat", "sun") else 600
+
+    specs: list[dict] = []
+    for s in PIPELINE_TOPOLOGY:
+        task_name = (
+            "finance_sync_nightly" if s.step_key == "finance_sync" else s.step_key
+        )
+        specs.append(
+            {
+                "id": s.step_key,
+                "task_name": task_name,
+                "hour": s.hour,
+                "minute": s.minute,
+                "day_of_week": s.weekday,
+                "misfire_grace_time": _misfire(s.weekday),
+            }
+        )
+    # 23:00 compensation — books back into the daily_k_sync step (alias).
+    specs.append(
+        {
+            "id": "daily_k_sync_retry",
+            "task_name": "daily_k_sync_retry",
+            "hour": 23,
+            "minute": 0,
+            "day_of_week": "mon-fri",
+            "misfire_grace_time": 600,
+        }
+    )
+    if settings.quality_check_enabled:
+        specs.append(
+            {
+                "id": "quality_check",
+                "task_name": "quality_check",
+                "hour": 8,
+                "minute": 0,
+                "day_of_week": "mon-fri",
+                "misfire_grace_time": 600,
+            }
+        )
+    return specs
+
+
 def init_scheduler() -> BackgroundScheduler:
     """Create (if needed) and start the background scheduler.
 
-    Idempotent: calling twice returns the same scheduler instance.
-
-    Registered jobs (all weekdays, Asia/Shanghai):
-    - ``daily_k_sync``: 17:30 (V1)
-    - ``daily_k_sync_retry``: 23:00 — replays only the codes that failed in
-      the 17:30 run; a no-op when there were no failures.
-    - V1.5 data jobs run after the daily-K sync so their inputs exist.
-      Each V1.5 job delegates to :func:`admin_service.run_task` so the run is
-      recorded in ``sa_admin_task_log`` (same path as a manual admin trigger).
+    Idempotent: calling twice returns the same scheduler instance. Every cron
+    job fires :func:`_run_admin_task` so its run is recorded in
+    ``sa_admin_task_log`` AND the pipeline step row (same path as a manual
+    admin trigger). The executor pool size is explicit (V2.5): the historical
+    implicit default was 10 threads.
     """
     global _scheduler
     if _scheduler is not None:
         return _scheduler
     # ``misfire_grace_time`` is generous on purpose: if a previous run (or the
-    # startup back-fill) clogs the single ThreadPoolExecutor, a cron firing may
-    # not be picked up until minutes later. The default 1s grace would then
-    # discard it as MISSED — which is how we silently lost an entire day's
-    # daily-K sync. 10 min tolerates a slow prior job without re-running stale
-    # ones hours later (``coalesce=True`` still collapses the backlog to 1).
-    sched = BackgroundScheduler(timezone="Asia/Shanghai")
-    sched.add_job(
-        run_daily_sync,
-        CronTrigger(hour=17, minute=30, day_of_week="mon-fri"),
-        id="daily_k_sync",
-        replace_existing=True,
-        coalesce=True,
-        misfire_grace_time=600,
+    # startup back-fill) clogs the thread pool, a cron firing may not be picked
+    # up until minutes later. The default 1s grace would then discard it as
+    # MISSED — which is how we silently lost an entire day's daily-K sync.
+    # 10 min tolerates a slow prior job without re-running stale ones hours
+    # later (``coalesce=True`` still collapses the backlog to 1).
+    sched = BackgroundScheduler(
+        timezone="Asia/Shanghai",
+        executors={"default": ThreadPoolExecutor(settings.scheduler_pool_size)},
     )
-    sched.add_job(
-        run_daily_sync_retry,
-        CronTrigger(hour=23, minute=0, day_of_week="mon-fri"),
-        id="daily_k_sync_retry",
-        replace_existing=True,
-        coalesce=True,
-        misfire_grace_time=600,
-    )
-    # Finance extras (roe/eps/growth) — uncapped fill/refresh, ~0.7s per
-    # stock; first run ≈ 1h for the full market, then only new listings plus
-    # a 200-code/day refresh rotation. Direct (not admin-wrapped) because the
-    # full fill exceeds the admin task's 300s deadline.
-    def _finance_sync_job() -> None:
-        from app.data.sync_finance import run_finance_sync
-
-        try:
-            run_finance_sync()
-        except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
-            logger.exception("finance sync job failed")
-
-    sched.add_job(
-        _finance_sync_job,
-        CronTrigger(hour=19, minute=30, day_of_week="mon-fri"),
-        id="finance_sync",
-        replace_existing=True,
-        coalesce=True,
-        misfire_grace_time=600,
-    )
-    # V1.5 jobs — registered via admin_service so they share the logging path.
-    # (task_name, hour, minute)
-    _v15_jobs = [
-        ("pool_sync", 16, 25),                # universe refresh, before everything that reads it
-        ("index_sync", 16, 35),              # indices via Tencent source, stable
-        ("sentiment_sync", 16, 45),          # after daily_k_sync
-        ("north_flow_sync", 17, 0),
-        ("money_flow_detail_sync", 17, 5),
-        ("sector_sync", 17, 10),
-        ("dragon_tiger_sync", 18, 0),        # dragon-tiger publishes ~17:30
-        # V2 agents
-        ("market_agent_sync", 18, 10),        # after data is settled
-        ("review_agent_sync", 18, 20),
-        # V2.1 样本治理与质量巡检（spec-004）
-        ("trade_status_sync", 19, 0),         # after the 17:30 dual-write settles
-        ("quality_check", 8, 0),              # next-morning patrol over settled data
-        # V3a 模拟盘日推进（spec-006）：撮合昨日订单→生成今日信号→估值→告警，
-        # 必须排在 17:30 日K 与 19:00 交易状态之后；周末/节假日由 tick 内跳过
-        ("paper_tick", 20, 0),
-    ]
-    for name, h, m in _v15_jobs:
+    for spec in _cron_job_specs():
         sched.add_job(
             _run_admin_task,
-            CronTrigger(hour=h, minute=m, day_of_week="mon-fri"),
-            args=[name],
-            id=name,
+            CronTrigger(
+                hour=spec["hour"],
+                minute=spec["minute"],
+                day_of_week=spec["day_of_week"],
+            ),
+            args=[spec["task_name"]],
+            id=spec["id"],
             replace_existing=True,
             coalesce=True,
-            misfire_grace_time=600,
+            misfire_grace_time=spec["misfire_grace_time"],
         )
-    # Weekly universe/industry refreshes: delisted list (Sat 09:00) and the
-    # eastmoney industry board constituents (Sun 09:00) change slowly.
-    for name, dow in (("delist_sync", "sat"), ("industry_map_sync", "sun")):
-        sched.add_job(
-            _run_admin_task,
-            CronTrigger(hour=9, minute=0, day_of_week=dow),
-            args=[name],
-            id=name,
-            replace_existing=True,
-            coalesce=True,
-            misfire_grace_time=3600,
-        )
-    # V2.2 T2.7 factor health patrol — Saturday after delist_sync so the PIT
-    # pool is fresh; results land in sa_data_quality_check (factor_health).
-    sched.add_job(
-        _run_admin_task,
-        CronTrigger(hour=9, minute=30, day_of_week="sat"),
-        args=["factor_health_check"],
-        id="factor_health_check",
-        replace_existing=True,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
     # Multi-year history back-fill — low-rate polling (anti-ban profile, see
     # app.data.history_backfill). ``jitter`` de-synchronises the tick from any
     # other periodic work; the tick itself skips the 17:15–18:45 daily-sync
@@ -462,12 +471,16 @@ def init_scheduler() -> BackgroundScheduler:
     )
     _scheduler = sched
     sched.start()
-    logger.info("scheduler started")
+    logger.info(
+        "scheduler started (%d cron jobs, pool=%d)",
+        len(_cron_job_specs()),
+        settings.scheduler_pool_size,
+    )
     return sched
 
 
 def _run_admin_task(task_name: str) -> None:
-    """Run a V1.5 task through admin_service so it gets logged."""
+    """Run a scheduled task through admin_service so it gets logged."""
     from app.services import admin_service
 
     try:

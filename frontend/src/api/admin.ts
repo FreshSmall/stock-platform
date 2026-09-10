@@ -74,6 +74,75 @@ export const fetchQualityDetail = (
 export const runQualityCheck = () =>
   client.post<TaskRunRow>('/admin/quality/check/run').then((r) => r.data);
 
+// --- V2.5 BP-V2.5-003 pipeline ------------------------------------------------
+
+export interface PipelineRunInfo {
+  run_date: string;
+  pipeline_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface PipelineStepTaskLog {
+  id: number;
+  status: string;
+  rows_affected: number | null;
+  progress_done: number | null;
+  progress_total: number | null;
+  result: unknown;
+  error: string | null;
+  triggered_by: string | null;
+}
+
+export interface PipelineStepRow {
+  step_key: string;
+  title: string;
+  seq: number;
+  status: string;
+  attempts: number;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  task_log: PipelineStepTaskLog | null;
+}
+
+export interface PipelineLongTask {
+  task_name: string;
+  title: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  rows_affected: number | null;
+  error: string | null;
+}
+
+export interface PipelineDaily {
+  run: PipelineRunInfo | null;
+  steps: PipelineStepRow[];
+  long_tasks: PipelineLongTask[];
+}
+
+export interface PipelineSummaryRow {
+  run_date: string;
+  pipeline_type: string;
+  status: string;
+  total: number;
+  ok: number;
+  failed: number;
+}
+
+export const fetchPipelineDaily = (date?: string) =>
+  client
+    .get<PipelineDaily>('/admin/pipeline/daily', { params: { date } })
+    .then((r) => r.data);
+
+export const fetchPipelineSummary = (days = 30) =>
+  client
+    .get<PipelineSummaryRow[]>('/admin/pipeline/summary', { params: { days } })
+    .then((r) => r.data);
+
 // ---- users ----
 export const fetchUsers = () =>
   client.get<AdminUserRow[]>('/admin/users').then((r) => r.data);

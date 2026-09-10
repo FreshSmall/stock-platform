@@ -38,8 +38,9 @@ import { useAuthStore } from '../store/authStore';
 import EmptyState from '../components/EmptyState';
 import QualityPanel from '../components/QualityPanel';
 import FactorHealthPanel from '../components/FactorHealthPanel';
+import PipelinePanel from '../components/PipelinePanel';
 
-type Tab = 'sources' | 'tasks' | 'quality' | 'health' | 'users';
+type Tab = 'tasks' | 'pipeline' | 'quality' | 'health' | 'sources' | 'users';
 
 // 管理后台. 仅 admin 可见 (路由层守卫之外再做一次确认).
 // V2.1: 任务页对齐后端 name-based 契约，长任务（重灌/修复/回补）异步提交并
@@ -65,6 +66,7 @@ export default function Admin() {
               onChange={(v) => setTab(v as Tab)}
               options={[
                 { label: '任务', value: 'tasks' },
+                { label: '管线', value: 'pipeline' },
                 { label: '数据质量', value: 'quality' },
                 { label: '因子健康', value: 'health' },
                 { label: '数据源', value: 'sources' },
@@ -75,6 +77,7 @@ export default function Admin() {
         >
           {tab === 'sources' && <DataSourcesTable />}
           {tab === 'tasks' && <TasksTable />}
+          {tab === 'pipeline' && <PipelinePanel />}
           {tab === 'quality' && <QualityPanel />}
           {tab === 'health' && <FactorHealthPanel />}
           {tab === 'users' && <UsersTable />}

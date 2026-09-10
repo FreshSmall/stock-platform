@@ -14,7 +14,7 @@ their progress into the log row).
 
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable
 
 from sqlalchemy import desc, select
@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.market_data import SaAdminTaskLog
 from app.models.user import SaUser
+from app.services import pipeline_service
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,14 @@ def _register_runners() -> None:
     _wrap("finance_sync", lambda db: int(
         sync_finance.sync_all(db, missing_cap=250, stale_cap=100).get("rows", 0)
     ))
+    # V2.5 收口（spec-007 BP-V2.5-002）: the previously unregistered jobs now
+    # run through the admin path so they land in sa_admin_task_log AND the
+    # pipeline step rows. nightly = uncapped finance fill (3600s deadline);
+    # retry = the 23:00 daily-K compensation (raising core, see scheduler).
+    _wrap("finance_sync_nightly", lambda db: int(
+        sync_finance.sync_all(db).get("rows", 0)
+    ))
+    _wrap("daily_k_sync_retry", lambda db: _daily_k_retry(db))
 
     # --- V2.1 数据修复（spec-004）-----------------------------------------
     from app.data import kline_rebuild as _kb
@@ -177,11 +186,21 @@ def _run_agent(db, agent_name: str) -> int:
 
 
 def _daily_k(db) -> int:
-    # delegate to the existing scheduler entry; returns row count best-effort
-    from app.scheduler import run_daily_sync
+    # Raising core of the 17:30 full-market sync (V2.5 收口): a TOTAL failure
+    # now propagates so the task log / pipeline step record it; per-code
+    # failures stay non-fatal (replayed by the 23:00 compensation).
+    from app.scheduler import _do_daily_sync
 
-    run_daily_sync()
-    return 0
+    rows, _failed = _do_daily_sync()
+    return rows
+
+
+def _daily_k_retry(db) -> int:
+    # Raising core of the 23:00 compensation (V2.5 收口).
+    from app.scheduler import _do_daily_sync_retry
+
+    rows, _mode = _do_daily_sync_retry()
+    return rows
 
 
 def _sentiment(db) -> int:
@@ -221,6 +240,8 @@ TASK_TITLES = {
     "history_backfill": "5年历史K线回填（批次）",
     "history_backfill_reset": "历史回填失败重置",
     "finance_sync": "财务数据同步（限量批，19:30）",
+    "finance_sync_nightly": "财务数据同步（夜间全量，19:30）",
+    "daily_k_sync_retry": "日K失败码重放/完整性自愈（23:00）",
     # V2.1
     "kline_rebuild_batch": "raw 日K全量重灌（手动加推一批）",
     "kline_rebuild_reset": "raw 重灌失败重置",
@@ -273,6 +294,16 @@ def list_tasks() -> list[dict]:
 # bounded by akshare_client._with_timeout; this is the outer backstop.
 _TASK_DEADLINE_SEC: float = 300.0
 
+# Per-task overrides (V2.5 收口): the uncapped nightly finance fill has a
+# legitimate ~1h tail (first full-market run); everything else keeps 300s.
+_TASK_DEADLINES: dict[str, float] = {
+    "finance_sync_nightly": 3600.0,
+}
+
+
+def _deadline_for(task_name: str) -> float:
+    return _TASK_DEADLINES.get(task_name, _TASK_DEADLINE_SEC)
+
 
 def _run_with_deadline(runner, task_name: str):
     """Run a task runner under a wall-clock deadline.
@@ -283,19 +314,23 @@ def _run_with_deadline(runner, task_name: str):
     """
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+    deadline = _deadline_for(task_name)
     # Dedicated single-worker pool per call so a stuck task can't starve others.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"task-{task_name}") as ex:
         fut = ex.submit(runner)
         try:
-            return fut.result(timeout=_TASK_DEADLINE_SEC)
+            return fut.result(timeout=deadline)
         except FuturesTimeout:
-            raise TimeoutError(
-                f"task {task_name} exceeded {_TASK_DEADLINE_SEC}s"
-            )
+            raise TimeoutError(f"task {task_name} exceeded {deadline}s")
 
 
 def run_task(task_name: str, triggered_by: str) -> dict:
     """Execute a task synchronously and log the outcome.
+
+    Topology tasks additionally land in their pipeline run/step rows via the
+    ``pipeline_service`` hooks (scheduler, retry and manual triggers share
+    this one path). The hooks swallow their own errors — bookkeeping must
+    never take a task down with it.
 
     :return: the created ``sa_admin_task_log`` row as a dict.
     """
@@ -317,6 +352,8 @@ def run_task(task_name: str, triggered_by: str) -> dict:
     finally:
         db.close()
 
+    pipeline_service.on_step_start(task_name, log_id, triggered_by)
+
     rows = 0
     status = "success"
     error = None
@@ -324,7 +361,7 @@ def run_task(task_name: str, triggered_by: str) -> dict:
         rows = _run_with_deadline(runner, task_name)
     except TimeoutError:
         status = "failed"
-        error = f"task exceeded {_TASK_DEADLINE_SEC}s wall-clock"
+        error = f"task exceeded {_deadline_for(task_name)}s wall-clock"
         logger.warning("admin task %s timed out", task_name)
     except Exception as e:  # noqa: BLE001 - record any failure
         status = "failed"
@@ -347,6 +384,9 @@ def run_task(task_name: str, triggered_by: str) -> dict:
         row = db.execute(
             select(SaAdminTaskLog).where(SaAdminTaskLog.id == log_id)
         ).scalar_one()
+        pipeline_service.on_step_finish(
+            task_name, log_id, status, error, triggered_by
+        )
         return _log_to_dict(row)
     finally:
         db.close()
@@ -389,14 +429,21 @@ def run_task_async(task_name: str, triggered_by: str) -> int:
         db.close()
 
     runner = _TASK_RUNNERS[task_name]
+    pipeline_service.on_step_start(task_name, log_id, triggered_by)
 
     def _worker() -> None:
         try:
             rows = runner()
             _finalize_run(log_id, status="success", rows=rows)
+            pipeline_service.on_step_finish(
+                task_name, log_id, "success", None, triggered_by
+            )
         except Exception as e:  # noqa: BLE001 - record any failure
             logger.exception("long task %s failed", task_name)
             _finalize_run(log_id, status="failed", error=str(e))
+            pipeline_service.on_step_finish(
+                task_name, log_id, "failed", str(e), triggered_by
+            )
 
     _long_task_executor.submit(_worker)
     return log_id
@@ -444,6 +491,49 @@ def task_logs(task_name: str, limit: int = 20) -> list[dict]:
             .limit(limit)
         ).scalars().all()
         return [_log_to_dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+def log_daily_summary(
+    task_name: str, rows: int, status: str = "success", error: str | None = None
+) -> None:
+    """Upsert today's summary row for an interval/polling job (V2.5).
+
+    Interval ticks (history back-fill, kline rebuild, startup back-fill) would
+    flood the log at one row per fire; one row per day, updated in place,
+    keeps them visible in the admin task history without the noise. Swallows
+    its own errors — a summary row must never break the job it summarizes.
+    """
+    day_start = datetime.combine(date.today(), datetime.min.time())
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            select(SaAdminTaskLog)
+            .where(
+                SaAdminTaskLog.task_name == task_name,
+                SaAdminTaskLog.started_at >= day_start,
+            )
+            .order_by(desc(SaAdminTaskLog.started_at))
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            row = SaAdminTaskLog(
+                task_name=task_name,
+                started_at=datetime.now(),
+                status="running",
+                triggered_by="scheduler",
+            )
+            db.add(row)
+            db.flush()
+        row.finished_at = datetime.now()
+        row.status = status
+        row.rows_affected = rows
+        row.error = error
+        db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("log_daily_summary(%s) failed", task_name)
+        db.rollback()
     finally:
         db.close()
 

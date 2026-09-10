@@ -300,6 +300,15 @@ def run_daily_check(db: Session, trade_date: date | None = None) -> dict:
     if d is None:
         return {"date": None, "results": [], "failed": 0}
 
+    # V2.5 (BP-V2.5-002): seed the pipeline_health rules before loading them
+    # so the first patrol after deploy already classifies its own metric.
+    try:
+        from app.services import pipeline_service
+
+        pipeline_service.ensure_rules(db)
+    except Exception:  # noqa: BLE001 - seeding is best-effort
+        logger.exception("pipeline rule seeding failed")
+
     rules = _load_rules(db)
     metrics: dict[tuple[str, str], tuple[float | None, dict]] = {}
 
@@ -328,6 +337,20 @@ def run_daily_check(db: Session, trade_date: date | None = None) -> dict:
         metrics.update(_check_coverage(db, d))
     except Exception as e:  # noqa: BLE001
         logger.exception("coverage checks failed")
+
+    # V2.5 (BP-V2.5-002): pipeline completeness — missing topology steps for
+    # the settled date plus the most recent weekend runs. A None value with no
+    # error means bookkeeping isn't live yet: skip the metric instead of
+    # materializing a perpetual warn row.
+    try:
+        from app.services import pipeline_service
+
+        value, detail = pipeline_service.patrol_missing(db, d)
+        if value is not None or detail.get("error"):
+            metrics[("pipeline_health", "step_missing")] = (value, detail)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("pipeline step_missing check failed")
+        metrics[("pipeline_health", "step_missing")] = (None, {"error": str(e)})
 
     results = []
     for (check, metric), (value, detail) in metrics.items():
