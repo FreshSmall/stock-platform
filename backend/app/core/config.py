@@ -58,6 +58,29 @@ class Settings(BaseSettings):
     history_batch_size: int = 15          # stocks per polling tick
     history_poll_minutes: int = 10        # polling interval
 
+    # --- V2.1 数据修复（spec-004）-------------------------------------------
+    # 复权读取切换开关：legacy=daily_prices(qfq，现状)；v2=sa_kline_daily(raw)
+    # + sa_adjust_factor 按需折算。灰度校验通过后切 v2，出问题改回 legacy 即回滚。
+    kline_source: str = "legacy"
+    # sa_kline_daily 全量重灌 tick（与 history_backfill 同一防封节奏），污染
+    # 清单（priority=0）优先出队。
+    kline_rebuild_enabled: bool = False   # D1 启动重灌时手动置 True
+    kline_rebuild_batch_size: int = 15
+    kline_rebuild_poll_minutes: int = 10
+    # 每日数据质量巡检（08:00）。
+    quality_check_enabled: bool = True
+
+    # --- V2.5 运行可靠性（spec-007）-----------------------------------------
+    # 调度线程池显式化（历史隐式默认即 10，行为不变）。
+    scheduler_pool_size: int = 10
+    # 管线 run/step 记账总开关：False 时钩子短路，退回纯 task_log 记录
+    # （事故一键降级；迁移保留不回滚）。
+    pipeline_enabled: bool = True
+    # 步骤级失败重试：调度触发的 step 失败后按间隔自动重试（进程内），
+    # 穷尽后落 pipeline_health 告警。per-step 可在拓扑表覆盖。
+    pipeline_step_retry_max: int = 2
+    pipeline_step_retry_gap_min: int = 5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,

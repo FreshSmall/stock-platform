@@ -16,11 +16,9 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.factor.base import Factor, FactorParam, registry
-from app.models.stock import DailyPrice
 from app.services import indicator_service, market_service
 
 logger = logging.getLogger(__name__)
@@ -174,21 +172,53 @@ class SuperTrendFactor(Factor):
 def _calc_supertrend(
     highs: pd.Series, lows: pd.Series, closes: pd.Series, period: int = 10, mult: float = 3.0
 ) -> pd.Series:
-    """SuperTrend sign series (+1 up / -1 down). Simplified single-pass."""
+    """SuperTrend sign series (+1 up / -1 down), classic ratcheted bands.
+
+    Basic bands are mid ± mult·ATR recomputed daily; the FINAL bands ratchet:
+    while price stays below the upper band it can only move down, while price
+    stays above the lower band it can only move up, and each band resets to
+    the current basic band once price closes beyond it. Without the ratchet
+    the stop line retreats with price during a fast reversal and the flip can
+    be missed entirely — observed: the previous simplified version kept 300328
+    at +1 through its June-2026 two-week -27% crash because the basic lower
+    band fell as fast as the price.
+    """
     tr = pd.concat(
         [highs - lows, (highs - closes.shift()).abs(), (lows - closes.shift()).abs()],
         axis=1,
     ).max(axis=1)
     atr = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     hl2 = (highs + lows) / 2.0
-    upper = hl2 + mult * atr
-    lower = hl2 - mult * atr
+    basic_upper = (hl2 + mult * atr).to_numpy()
+    basic_lower = (hl2 - mult * atr).to_numpy()
+    close = closes.to_numpy()
+
     sign = pd.Series(np.nan, index=closes.index)
-    in_up = True
-    for i in range(1, len(closes)):
-        if closes.iloc[i] > upper.iloc[i - 1]:
+    final_upper = np.nan  # ratcheted bands; NaN until the ATR warmup yields values
+    final_lower = np.nan
+    in_up = True  # seed: assume uptrend at window start
+    for i in range(1, len(close)):
+        prev_close = close[i - 1]
+        if not np.isnan(basic_upper[i]):
+            # Upper band only ratchets down while price trades below it; it
+            # resets to the current basic band once a close escapes above it.
+            if (
+                np.isnan(final_upper)
+                or basic_upper[i] < final_upper
+                or prev_close > final_upper
+            ):
+                final_upper = basic_upper[i]
+        if not np.isnan(basic_lower[i]):
+            # Symmetric: the lower band only ratchets up while price is above.
+            if (
+                np.isnan(final_lower)
+                or basic_lower[i] > final_lower
+                or prev_close < final_lower
+            ):
+                final_lower = basic_lower[i]
+        if not np.isnan(final_upper) and close[i] > final_upper:
             in_up = True
-        elif closes.iloc[i] < lower.iloc[i - 1]:
+        elif not np.isnan(final_lower) and close[i] < final_lower:
             in_up = False
         sign.iloc[i] = 1.0 if in_up else -1.0
     return sign

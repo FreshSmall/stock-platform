@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import BizError
 from app.ml import backtest as bt
-from app.ml import barriers, features, model, trendline
+from app.ml import barriers, evaluation, features, model, trendline
 from app.models.stock import DailyPrice
 
 logger = logging.getLogger(__name__)
@@ -185,8 +185,9 @@ def run_meta_label(
             "请扩大时间范围、增加股票数量或调小 init_train",
         )
 
-    pred, clf = model.walk_forward(
-        frame, init_train=init_train, step=step, embargo_days=embargo_days
+    pred, clf, folds = model.walk_forward(
+        frame, init_train=init_train, step=step, embargo_days=embargo_days,
+        return_folds=True,
     )
     if pred.empty:
         raise BizError(400, "walk-forward 没有产出任何有效折（可尝试调小 init_train / embargo_days）")
@@ -216,4 +217,16 @@ def run_meta_label(
         ]
         if clf is not None
         else [],
+        # V2.2 T2.6: auditable OOS evaluation — overall / by-year classification,
+        # threshold sweep (trading + precision view), probability calibration,
+        # and importance stability across folds.
+        "evaluation": {
+            "overall": evaluation.classification_metrics(pred["label"], pred["prob"]),
+            "by_year": evaluation.by_year(pred),
+            "threshold_sweep": evaluation.threshold_sweep(pred),
+            "calibration": evaluation.calibration_bins(pred),
+            "feature_importance_stability": evaluation.importance_stability(
+                [f["importances"] for f in folds]
+            ),
+        },
     }

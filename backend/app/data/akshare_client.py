@@ -244,10 +244,19 @@ def fetch_daily_quotes(
     rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date, max_bars=max_bars)
     if rows:
         return rows
-    # If Tencent returned [] due to an *error* (not a genuine empty window),
-    # we can't tell here — but trying eastmoney anyway is cheap and gives the
-    # STAR-board qfq codes (which Tencent 501s) a chance. A genuine empty
-    # window will just come back empty again, so no harm.
+    return _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="qfq")
+
+
+def _fetch_daily_quotes_em(
+    symbol: str, start_date: str, end_date: str, adjust: str
+) -> list[dict]:
+    """Eastmoney fallback via akshare ``stock_zh_a_hist`` for any adjust basis.
+
+    Covers the STAR-board qfq codes Tencent sometimes 501s and fills
+    ``amount``/``turnover``. ``adjust`` is one of ``""`` (raw) / ``"qfq"`` /
+    ``"hfq"``. Returns ``[]`` on any failure — same contract as the Tencent
+    fetchers.
+    """
     try:
         _throttle()
         df = _with_timeout(
@@ -256,7 +265,7 @@ def fetch_daily_quotes(
             period="daily",
             start_date=start_date,
             end_date=end_date,
-            adjust="qfq",
+            adjust=adjust,
         )
         if df is None or df.empty:
             return []
@@ -279,13 +288,86 @@ def fetch_daily_quotes(
             )
             return []
         return rows
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(
             "eastmoney fallback failed for %s: %s",
             symbol,
             e,
         )
         return []
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_daily_quotes_raw(
+    symbol: str, start_date: str, end_date: str, max_bars: int = 400
+) -> list[dict]:
+    """Fetch UN-adjusted (raw/不复权) daily OHLCV for one A-share symbol.
+
+    V2.1 (spec-004 BP-V2.1-001): ``sa_kline_daily`` stores raw prices plus a
+    per-day adjust factor, so the read layer can derive qfq/hfq on demand
+    with a single, stable basis. Source chain mirrors
+    :func:`fetch_daily_quotes`: Tencent ``bfq`` (primary, extended bars carry
+    amount/turnover; verified live 2026-08-31 — key ``day``) → classic host →
+    eastmoney ``adjust=""``.
+
+    ⚠ ``pct_change`` in the returned rows is computed from RAW closes (or is
+    eastmoney's true return when that fallback served). On ex-dividend days
+    the Tencent-derived value is the un-adjusted return —
+    :mod:`app.data.sync_kline` always overlays the true pct from the qfq
+    series before writing.
+    """
+    rows = _fetch_daily_quotes_tencent(
+        symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True,
+        max_bars=max_bars, fq="bfq",
+    )
+    if rows:
+        for r in rows:
+            r["_source"] = "tencent"
+        return rows
+    rows = _fetch_daily_quotes_tencent(
+        symbol, start_date, end_date, max_bars=max_bars, fq="bfq",
+    )
+    if rows:
+        for r in rows:
+            r["_source"] = "tencent"
+        return rows
+    rows = _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="")
+    for r in rows:
+        r["_source"] = "em"
+    return rows
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def fetch_daily_quotes_hfq(
+    symbol: str, start_date: str, end_date: str, max_bars: int = 400
+) -> list[dict]:
+    """Fetch BACK-adjusted daily closes — the factor anchor source.
+
+    Used only by the rebuild / re-anchor paths
+    (:func:`app.data.sync_kline.init_adjust_factors`): ``factor_t =
+    hfq_close_t / raw_close_t`` per day gives an exact factor chain, so the
+    rounding drift of incremental pct-anchored propagation never accumulates.
+    """
+    rows = _fetch_daily_quotes_tencent(
+        symbol, start_date, end_date, url=_TENCENT_KLINE_ALT, extended=True,
+        max_bars=max_bars, fq="hfq",
+    )
+    if rows:
+        return rows
+    rows = _fetch_daily_quotes_tencent(
+        symbol, start_date, end_date, max_bars=max_bars, fq="hfq",
+    )
+    if rows:
+        return rows
+    return _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="hfq")
 
 
 def _frame_to_rows(symbol: str, df) -> list[dict]:
@@ -376,8 +458,9 @@ def _fetch_daily_quotes_tencent(
     url: str = _TENCENT_KLINE,
     extended: bool = False,
     max_bars: int = 400,
+    fq: str = "qfq",
 ) -> list[dict]:
-    """Tencent front-adjusted daily kline for one A-share symbol.
+    """Tencent daily kline for one A-share symbol, any adjust basis.
 
     :param url: which Tencent host to query (primary or the alternate,
         see :data:`_TENCENT_KLINE_ALT`).
@@ -387,6 +470,11 @@ def _fetch_daily_quotes_tencent(
         them ``None``.
     :param max_bars: cap on the requested bar count (see
         :func:`fetch_daily_quotes` for the server-side ~640 clamp).
+    :param fq: adjust basis — ``"qfq"`` (front-adjusted, the V1 default),
+        ``"bfq"`` (un-adjusted/raw, response key ``day``) or ``"hfq"``
+        (back-adjusted, key ``hfqday``). Verified live 2026-08-31 against
+        ``proxy.finance.qq.com``: no-fq suffix returns an EMPTY payload, so
+        raw MUST be requested as ``bfq``.
 
     Tencent serves "the most recent *N* bars" rather than a date range, so we
     estimate *N* from the requested window (calendar-day span + a buffer for
@@ -395,6 +483,11 @@ def _fetch_daily_quotes_tencent(
 
     Returns rows with the same schema as :func:`fetch_daily_quotes`, except
     ``amount`` and ``turnover`` are ``None`` unless ``extended``.
+
+    ⚠ With ``fq="bfq"`` the client-side ``pct_change`` is computed from RAW
+    closes — on ex-dividend days that is the *un-adjusted* return, not the
+    true one. Callers needing the true pct on raw bars must take it from the
+    qfq series (see :func:`app.data.sync_kline`).
 
     On any error returns ``[]`` — the caller will record the code as failed so
     the 23:00 retry can pick it up.
@@ -424,7 +517,7 @@ def _fetch_daily_quotes_tencent(
     try:
         r = _tencent_get(
             url,
-            params={"param": f"{sym},day,{d_start},{d_end},{n},qfq"},
+            params={"param": f"{sym},day,{d_start},{d_end},{n},{fq}"},
             timeout=12,
         )
         if r is None:
@@ -439,9 +532,11 @@ def _fetch_daily_quotes_tencent(
         )
         return []
 
-    # Tencent field order per bar: [date, open, close, high, low, volume].
-    # ``qfqday`` is the front-adjusted series; fall back to plain ``day``.
-    raw = data.get("qfqday") or data.get("day") or []
+    # Response key per basis (verified live 2026-08-31): qfq→qfqday,
+    # hfq→hfqday, bfq→day. The qfq path keeps the historical "fall back to
+    # plain day" behaviour for the classic host.
+    series_key = {"qfq": "qfqday", "hfq": "hfqday", "bfq": "day"}.get(fq, "qfqday")
+    raw = data.get(series_key) or (data.get("day") if fq == "qfq" else []) or []
     start_yyyymmdd = start_date
     end_yyyymmdd = end_date
     out: list[dict] = []

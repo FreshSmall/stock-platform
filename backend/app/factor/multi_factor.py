@@ -37,7 +37,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -251,9 +250,52 @@ def score_stocks(
     return select_top_n(score, raw, n=top_n, min_score=min_score)
 
 
+# --- research-validated presets (V2.2 / BP-V2.2-001) -----------------------
+#
+# From the 2026-08 full-market RankIC survey (backend/reports/ic_survey_20260822.md):
+# A-shares 2021-2026 are a reversal regime — momentum / liquidity / volatility
+# names all carry significant negative IC, so the composite enters every factor
+# with direction=-1 (oversold + low-vol + low-liquidity portfolio).
+PRESET_V2_REVERSAL: list[FactorWeight] = [
+    FactorWeight("amt20", 0.30, direction=-1),
+    FactorWeight("roc120", 0.25, direction=-1),
+    FactorWeight("hv20", 0.20, direction=-1),
+    FactorWeight("rsi14", 0.15, direction=-1),
+    FactorWeight("skew20", 0.10, direction=-1),
+]
+
+PRESETS: dict[str, list[FactorWeight]] = {
+    "v2_reversal": PRESET_V2_REVERSAL,
+}
+
+
+def preset_meta() -> list[dict]:
+    """Preset list for API/UI display."""
+    return [
+        {
+            "name": name,
+            "title": "V2 反转组合" if name == "v2_reversal" else name,
+            "factors": [
+                {"code": fw.code, "weight": fw.weight, "direction": fw.direction}
+                for fw in specs
+            ],
+        }
+        for name, specs in PRESETS.items()
+    ]
+
+
+def resolve_preset(name: str) -> list[FactorWeight] | None:
+    """Factor specs for a preset name, or None if unknown."""
+    return PRESETS.get(name)
+
+
 __all__ = [
     "FactorWeight",
+    "PRESETS",
+    "PRESET_V2_REVERSAL",
     "composite_score",
+    "preset_meta",
+    "resolve_preset",
     "select_top_n",
     "score_stocks",
 ]

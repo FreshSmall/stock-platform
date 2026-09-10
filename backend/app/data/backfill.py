@@ -247,15 +247,33 @@ def backfill_on_startup() -> None:
 
     Opens its own session (the startup thread must not share the request
     session), detects the gap, and catches up. Swallows all errors so a
-    back-fill failure never prevents the service from starting.
+    back-fill failure never prevents the service from starting. The outcome
+    lands as one ``startup_backfill`` summary row in ``sa_admin_task_log``
+    (V2.5 收口 — previously this thread was invisible to the admin console).
     """
     from app.core.database import SessionLocal
 
     try:
         db = SessionLocal()
         try:
-            backfill_daily_k(db)
+            rows = backfill_daily_k(db)
         finally:
             db.close()
-    except Exception:  # noqa: BLE001 - startup must not crash on backfill
+        _log_startup_summary(rows, None)
+    except Exception as e:  # noqa: BLE001 - startup must not crash on backfill
         logger.exception("backfill: startup back-fill failed")
+        _log_startup_summary(0, str(e))
+
+
+def _log_startup_summary(rows: int, error: str | None) -> None:
+    try:
+        from app.services.admin_service import log_daily_summary
+
+        log_daily_summary(
+            "startup_backfill",
+            rows,
+            status="failed" if error else "success",
+            error=error[:500] if error else None,
+        )
+    except Exception:  # noqa: BLE001 - never block startup over a log row
+        logger.exception("backfill: startup summary logging failed")

@@ -83,11 +83,20 @@ def test_self_check_no_prior_history_is_not_incomplete():
 
 
 def test_retry_reruns_full_sync_when_incomplete():
-    """Incomplete today → the retry delegates to the full 17:30 sync."""
+    """Incomplete today → the retry delegates to the full 17:30 sync core.
+
+    V2.5: the retry core calls ``_do_daily_sync`` directly (raising path for
+    the admin bookkeeping), so the patch target moved off the catch-all
+    ``run_daily_sync`` wrapper — patching the wrapper would let the REAL
+    full-market sync run inside the test.
+    """
     calls = []
     with (
         patch.object(scheduler, "_today_looks_incomplete", return_value=True),
-        patch.object(scheduler, "run_daily_sync", side_effect=lambda: calls.append(1)),
+        patch.object(
+            scheduler, "_do_daily_sync",
+            side_effect=lambda: calls.append(1) or (0, []),
+        ),
     ):
         scheduler._last_run_failed_codes = []
         scheduler.run_daily_sync_retry()
@@ -99,7 +108,10 @@ def test_retry_skips_when_complete_and_no_failures():
     calls = []
     with (
         patch.object(scheduler, "_today_looks_incomplete", return_value=False),
-        patch.object(scheduler, "run_daily_sync", side_effect=lambda: calls.append(1)),
+        patch.object(
+            scheduler, "_do_daily_sync",
+            side_effect=lambda: calls.append(1) or (0, []),
+        ),
     ):
         scheduler._last_run_failed_codes = []
         scheduler.run_daily_sync_retry()

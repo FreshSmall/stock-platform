@@ -1,0 +1,298 @@
+{
+  "generated": "2026-09-05",
+  "config": {
+    "variant": "atr",
+    "pt": 0.04,
+    "sl": 0.02,
+    "horizon": 10,
+    "init_train": 5000,
+    "step": 2000,
+    "cost": 0.0015,
+    "cache_reused": true
+  },
+  "overall": {
+    "n": 65360,
+    "precision": 0.401,
+    "recall": 0.2899,
+    "f1": 0.3365,
+    "accuracy": 0.5475,
+    "auc": 0.5039
+  },
+  "by_year": {
+    "2022": {
+      "n": 12301,
+      "precision": 0.3688,
+      "recall": 0.3026,
+      "f1": 0.3324,
+      "accuracy": 0.5429,
+      "auc": 0.4849
+    },
+    "2023": {
+      "n": 14206,
+      "precision": 0.3625,
+      "recall": 0.3374,
+      "f1": 0.3495,
+      "accuracy": 0.5719,
+      "auc": 0.5218
+    },
+    "2024": {
+      "n": 13725,
+      "precision": 0.4227,
+      "recall": 0.2993,
+      "f1": 0.3505,
+      "accuracy": 0.5411,
+      "auc": 0.4934
+    },
+    "2025": {
+      "n": 16741,
+      "precision": 0.4634,
+      "recall": 0.2454,
+      "f1": 0.3209,
+      "accuracy": 0.536,
+      "auc": 0.5196
+    },
+    "2026": {
+      "n": 8387,
+      "precision": 0.3848,
+      "recall": 0.2869,
+      "f1": 0.3287,
+      "accuracy": 0.5462,
+      "auc": 0.4946
+    }
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.45,
+      "n_taken": 35550,
+      "coverage": 0.5439,
+      "precision": 0.3987,
+      "n_trades": 35550,
+      "win_rate": 0.397,
+      "profit_factor": 1.11,
+      "avg_ret": 0.00252,
+      "total_ret": 2099551691385290.8,
+      "max_drawdown": -1.0,
+      "avg_hold_days": 3.78,
+      "ann_ret_dailycap": 0.0957
+    },
+    {
+      "threshold": 0.5,
+      "n_taken": 18704,
+      "coverage": 0.2862,
+      "precision": 0.401,
+      "n_trades": 18704,
+      "win_rate": 0.3993,
+      "profit_factor": 1.134,
+      "avg_ret": 0.00295,
+      "total_ret": 1261560452769.4587,
+      "max_drawdown": -1.0,
+      "avg_hold_days": 3.84,
+      "ann_ret_dailycap": 0.2237
+    },
+    {
+      "threshold": 0.55,
+      "n_taken": 8379,
+      "coverage": 0.1282,
+      "precision": 0.3934,
+      "n_trades": 8379,
+      "win_rate": 0.3917,
+      "profit_factor": 1.14,
+      "avg_ret": 0.00296,
+      "total_ret": 543347.9016,
+      "max_drawdown": -1.0,
+      "avg_hold_days": 3.91,
+      "ann_ret_dailycap": 0.0674
+    },
+    {
+      "threshold": 0.6,
+      "n_taken": 3313,
+      "coverage": 0.0507,
+      "precision": 0.377,
+      "n_trades": 3313,
+      "win_rate": 0.3755,
+      "profit_factor": 1.064,
+      "avg_ret": 0.0013,
+      "total_ret": 0.3102,
+      "max_drawdown": -1.0,
+      "avg_hold_days": 4.06,
+      "ann_ret_dailycap": 0.0645
+    },
+    {
+      "threshold": 0.65,
+      "n_taken": 1202,
+      "coverage": 0.0184,
+      "precision": 0.3611,
+      "n_trades": 1202,
+      "win_rate": 0.3586,
+      "profit_factor": 0.955,
+      "avg_ret": -0.00088,
+      "total_ret": -0.8984,
+      "max_drawdown": -0.9963,
+      "avg_hold_days": 4.14,
+      "ann_ret_dailycap": 0.2516
+    },
+    {
+      "threshold": 0.7,
+      "n_taken": 378,
+      "coverage": 0.0058,
+      "precision": 0.3624,
+      "n_trades": 378,
+      "win_rate": 0.3624,
+      "profit_factor": 0.978,
+      "avg_ret": -0.00039,
+      "total_ret": -0.377,
+      "max_drawdown": -0.9018,
+      "avg_hold_days": 4.28,
+      "ann_ret_dailycap": 0.171
+    }
+  ],
+  "calibration": [
+    {
+      "bin": 1,
+      "prob_range": [
+        0.194,
+        0.402
+      ],
+      "n": 13072,
+      "mean_prob": 0.3665,
+      "actual_pos_rate": 0.3918
+    },
+    {
+      "bin": 2,
+      "prob_range": [
+        0.402,
+        0.44
+      ],
+      "n": 13072,
+      "mean_prob": 0.4222,
+      "actual_pos_rate": 0.3902
+    },
+    {
+      "bin": 3,
+      "prob_range": [
+        0.44,
+        0.476
+      ],
+      "n": 13072,
+      "mean_prob": 0.4576,
+      "actual_pos_rate": 0.3989
+    },
+    {
+      "bin": 4,
+      "prob_range": [
+        0.476,
+        0.523
+      ],
+      "n": 13072,
+      "mean_prob": 0.4976,
+      "actual_pos_rate": 0.4
+    },
+    {
+      "bin": 5,
+      "prob_range": [
+        0.523,
+        0.859
+      ],
+      "n": 13072,
+      "mean_prob": 0.5776,
+      "actual_pos_rate": 0.3983
+    }
+  ],
+  "importance_stability": [
+    {
+      "feature": "idx_ret20",
+      "mean": 0.1749,
+      "std": 0.0188,
+      "cv": 0.107,
+      "n_folds": 33
+    },
+    {
+      "feature": "log_amt20",
+      "mean": 0.0889,
+      "std": 0.0053,
+      "cv": 0.06,
+      "n_folds": 33
+    },
+    {
+      "feature": "atr_pct",
+      "mean": 0.088,
+      "std": 0.0082,
+      "cv": 0.093,
+      "n_folds": 33
+    },
+    {
+      "feature": "rsi12",
+      "mean": 0.0856,
+      "std": 0.0053,
+      "cv": 0.062,
+      "n_folds": 33
+    },
+    {
+      "feature": "adx14",
+      "mean": 0.0845,
+      "std": 0.0071,
+      "cv": 0.084,
+      "n_folds": 33
+    },
+    {
+      "feature": "slope_norm",
+      "mean": 0.0815,
+      "std": 0.0054,
+      "cv": 0.067,
+      "n_folds": 33
+    },
+    {
+      "feature": "ret5",
+      "mean": 0.0765,
+      "std": 0.0024,
+      "cv": 0.031,
+      "n_folds": 33
+    },
+    {
+      "feature": "dist_ma20",
+      "mean": 0.0764,
+      "std": 0.0032,
+      "cv": 0.041,
+      "n_folds": 33
+    },
+    {
+      "feature": "vol_ratio",
+      "mean": 0.0747,
+      "std": 0.0042,
+      "cv": 0.056,
+      "n_folds": 33
+    },
+    {
+      "feature": "dev",
+      "mean": 0.0736,
+      "std": 0.004,
+      "cv": 0.054,
+      "n_folds": 33
+    },
+    {
+      "feature": "ll_span",
+      "mean": 0.0492,
+      "std": 0.0033,
+      "cv": 0.068,
+      "n_folds": 33
+    },
+    {
+      "feature": "bars_since",
+      "mean": 0.0461,
+      "std": 0.002,
+      "cv": 0.043,
+      "n_folds": 33
+    }
+  ],
+  "raw_perf": {
+    "n_trades": 65360,
+    "win_rate": 0.3942,
+    "profit_factor": 1.099,
+    "avg_ret": 0.00235,
+    "total_ret": 3.7965146941257453e+21,
+    "max_drawdown": -1.0,
+    "avg_hold_days": 3.7,
+    "ann_ret_dailycap": -0.0116
+  },
+  "n_folds": 33
+}

@@ -28,6 +28,7 @@ from app.api.factor import router as factor_router
 from app.api.market import router as market_router
 from app.api.ml_strategy import router as ml_strategy_router
 from app.api.news import router as news_router
+from app.api.paper import router as paper_router
 from app.api.portfolio import router as portfolio_router
 from app.api.reports import router as reports_router
 from app.api.sector import router as sector_router
@@ -106,6 +107,7 @@ router.include_router(dragon_tiger_router)
 router.include_router(sector_router)
 router.include_router(factor_router)
 router.include_router(portfolio_router)
+router.include_router(paper_router)
 router.include_router(reports_router)
 router.include_router(news_router)
 router.include_router(admin_router)

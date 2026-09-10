@@ -30,6 +30,14 @@ class BacktestRequest(BaseModel):
     commission: Decimal = Decimal("0.0003")
     slippage: Decimal = Decimal("0.0001")
 
+    # V2.1 sample governance (spec-004 BP-V2.1-005): flags gate the TARGET's
+    # eligibility at the backtest window's first bar (matching-layer
+    # constraints — per-day buy/sell blocking — land with V2.2 T2.2's
+    # execution-model rework). Defaults keep the exact V2 behaviour.
+    exclude_st: bool = False
+    exclude_suspended: bool = False
+    only_tradable: bool = False
+
 
 class BacktestResultMetrics(BaseModel):
     """The 5 headline metrics surfaced in the status payload."""

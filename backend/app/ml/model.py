@@ -45,19 +45,25 @@ def walk_forward(
     step: int = 50,
     embargo_days: int = 14,
     rf_overrides: dict | None = None,
-) -> tuple[pd.DataFrame, RandomForestClassifier | None]:
+    return_folds: bool = False,
+) -> tuple:
     """Score every signal out-of-sample with an expanding-window forest.
 
     Expects columns ``trade_date`` / ``t_end_date`` / ``label`` plus
     :data:`FEATS`; rows with NaN features must be dropped by the caller.
     Returns the concatenated test folds with a ``prob`` column (P(label=1)),
     and the last fitted model (for feature importances) or ``None``.
+
+    ``return_folds=True`` additionally returns fold metadata (test start,
+    train size, per-fold feature importances) as a third element — the V2.2
+    evaluation layer uses it for importance-stability monitoring.
     """
     params = {**RF_PARAMS, **(rf_overrides or {})}
     sigs = sigs.sort_values("trade_date").reset_index(drop=True)
 
     preds: list[pd.DataFrame] = []
     last_model: RandomForestClassifier | None = None
+    folds: list[dict] = []
     for k in range(init_train, len(sigs), step):
         test = sigs.iloc[k : k + step]
         train = purge(sigs.iloc[:k], test["trade_date"].min(), embargo_days)
@@ -70,7 +76,18 @@ def walk_forward(
         out["prob"] = clf.predict_proba(test[FEATS])[:, prob_col]
         preds.append(out)
         last_model = clf
+        if return_folds:
+            folds.append(
+                {
+                    "test_start": pd.Timestamp(test["trade_date"].min()),
+                    "n_train": int(len(train)),
+                    "importances": {
+                        f: float(v) for f, v in zip(FEATS, clf.feature_importances_)
+                    },
+                }
+            )
 
     if not preds:
-        return pd.DataFrame(), None
-    return pd.concat(preds, ignore_index=True), last_model
+        return (pd.DataFrame(), None, folds) if return_folds else (pd.DataFrame(), None)
+    result = (pd.concat(preds, ignore_index=True), last_model)
+    return (*result, folds) if return_folds else result

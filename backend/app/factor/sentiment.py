@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.factor import cache as fcache
 from app.factor.base import Factor, registry
-from app.models.sentiment import SaLimitUpStreak, SaMarketSentiment
+from app.models.sentiment import SaMarketSentiment
 
 
 def _market_sentiment_on(db: Session, trade_date: date) -> SaMarketSentiment | None:

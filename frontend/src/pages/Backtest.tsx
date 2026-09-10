@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Form,
@@ -213,6 +214,11 @@ export default function Backtest() {
       initial_cash: Number(vals.initial_cash),
       commission: Number(vals.commission),
       slippage: Number(vals.slippage),
+      // V2.1 sample governance: gate the target at the window start (matching-
+      // layer constraints land with V2.2). Defaults off = unchanged behaviour.
+      exclude_st: vals.exclude_st ?? false,
+      exclude_suspended: vals.exclude_suspended ?? false,
+      only_tradable: vals.only_tradable ?? false,
     };
 
     setSubmitting(true);
@@ -284,6 +290,22 @@ export default function Backtest() {
                 allowClear
                 options={BENCHMARK_OPTIONS}
               />
+            </Form.Item>
+
+            {/* V2.1 样本过滤（BP-V2.1-005）：标的不满足条件时回测直接拒绝，
+                默认全不勾选 = V2 原行为。 */}
+            <Form.Item label="样本过滤" style={{ marginBottom: 4 }}>
+              <Space size={12}>
+                <Form.Item name="exclude_st" valuePropName="checked" noStyle>
+                  <Checkbox>剔除 ST</Checkbox>
+                </Form.Item>
+                <Form.Item name="exclude_suspended" valuePropName="checked" noStyle>
+                  <Checkbox>剔除停牌</Checkbox>
+                </Form.Item>
+                <Form.Item name="only_tradable" valuePropName="checked" noStyle>
+                  <Checkbox>仅可成交</Checkbox>
+                </Form.Item>
+              </Space>
             </Form.Item>
 
             <Form.Item label="股票池" required>

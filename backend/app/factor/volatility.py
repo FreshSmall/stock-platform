@@ -13,7 +13,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.factor.base import Factor, FactorParam, registry
-from app.factor.trend import _closes_up_to, _last_or_none, _WINDOW
+from app.factor.trend import _closes_up_to, _WINDOW
 from app.services import indicator_service, market_service
 
 
@@ -91,3 +91,29 @@ class HvFactor(Factor):
 registry.register(BollWidthFactor())
 registry.register(AtrFactor())
 registry.register(HvFactor())
+
+
+class SkewFactor(Factor):
+    """Rolling skewness of daily log returns.
+
+    Negative-IC name in the 2026-08 survey (A-share reversal regime): stocks
+    with a right-skewed recent return distribution tend to underperform —
+    a few big up-days propping up an otherwise flat series.
+    """
+
+    code = "skew20"
+    name = "20日收益偏度"
+    category = "volatility"
+    params = [FactorParam("period", 20, min=5, max=60, description="偏度窗口")]
+
+    def compute(self, db: Session, stock: str, trade_date: date) -> float | None:
+        period = self.default_kwargs()["period"]
+        closes = _closes_up_to(db, stock, trade_date, n=period + 5)
+        if len(closes) < period + 1:
+            return None
+        logret = np.log(closes / closes.shift(1))
+        v = logret.rolling(window=period, min_periods=period).skew().iloc[-1]
+        return None if pd.isna(v) else float(v)
+
+
+registry.register(SkewFactor())

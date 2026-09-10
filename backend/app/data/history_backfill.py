@@ -412,6 +412,26 @@ def _in_quiet_window(now: datetime | None = None) -> bool:
     return _QUIET_FROM <= minutes <= _QUIET_TO
 
 
+def _log_tick_summary(summary: dict) -> None:
+    """One task-log row per day for this polling job (V2.5 BP-V2.5-002).
+
+    A row per 10-minute tick would flood ``sa_admin_task_log``; the daily
+    summary row is upserted in place (see admin_service.log_daily_summary).
+    """
+    try:
+        from app.services.admin_service import log_daily_summary
+
+        err = summary.get("error")
+        log_daily_summary(
+            "history_backfill_tick",
+            int(summary.get("rows", 0) or 0),
+            status="failed" if err else "success",
+            error=str(err)[:500] if err else None,
+        )
+    except Exception:  # noqa: BLE001 - never break the tick over its summary
+        logger.exception("history tick summary logging failed")
+
+
 def tick() -> dict:
     """Scheduler entry: own session, seed state, run one batch, log summary."""
     from app.core.database import SessionLocal
@@ -428,9 +448,11 @@ def tick() -> dict:
         summary = run_history_batch(db)
         if summary.get("synced"):
             logger.info("history backfill tick: %s", summary)
+        _log_tick_summary(summary)
         return summary
     except Exception:  # noqa: BLE001 - a scheduler job must never crash the thread
         logger.exception("history backfill tick failed")
+        _log_tick_summary({"error": "tick failed"})
         return {"error": "tick failed"}
     finally:
         db.close()

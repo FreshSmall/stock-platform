@@ -250,25 +250,47 @@ export interface BOLLRow {
   low?: number | null;
 }
 
-// Admin: data sources / tasks / users (V1.5 management).
+// Admin: data sources / tasks / users (V1.5 management, aligned to the
+// backend /api/v1/admin contract; V2.1 adds task runs + quality patrol).
 export interface DataSourceRow {
-  id: number;
   name: string;
   type: string | null;
-  status: number | null; // 1=enabled, 0=disabled
-  last_sync_at: string | null;
-  last_status: string | null;
-  last_message: string | null;
+  note: string | null;
 }
 
 export interface TaskRow {
-  id: number;
-  name: string;
-  cron: string | null;
-  status: number | null; // 1=enabled, 0=disabled
-  last_run_at: string | null;
+  task_name: string;
+  title: string; // human-readable name (V2.1)
+  is_long?: boolean; // runs async via run_task_async
   last_status: string | null;
-  last_message: string | null;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  last_rows: number | null;
+}
+
+// One sa_admin_task_log execution (V2.1: async long tasks + progress).
+export interface TaskRunRow {
+  id: number;
+  task_name: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string; // running / success / failed
+  rows_affected: number | null;
+  progress_done: number | null;
+  progress_total: number | null;
+  result: Record<string, unknown> | string | null;
+  error: string | null;
+  triggered_by: string | null;
+}
+
+// One quality-patrol metric result for a check date (V2.1 BP-V2.1-007).
+export interface QualityCheckRow {
+  check_date: string;
+  check_name: string;
+  metric_name: string;
+  metric_value: number | null;
+  status: string; // pass / warn / fail
+  detail: Record<string, unknown> | string | null;
 }
 
 export interface AdminUserRow {
