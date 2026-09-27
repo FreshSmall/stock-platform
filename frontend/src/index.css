@@ -34,6 +34,12 @@ body {
   word-break: break-word;
 }
 
+/* Allow list rows (e.g. report summaries) to shrink instead of overflowing
+   their card when the pane is narrower than the fixed max-width of old. */
+.ant-list-item-main {
+  min-width: 0;
+}
+
 .assistant-md > :first-child {
   margin-top: 0;
 }
@@ -125,6 +131,8 @@ body {
 }
 
 .assistant-md table {
+  display: block;
+  overflow-x: auto;
   margin: 0.8em 0;
   width: 100%;
   border-collapse: collapse;
@@ -136,6 +144,11 @@ body {
   padding: 6px 10px;
   border: 1px solid #e8e8e8;
   text-align: left;
+  vertical-align: top;
+}
+
+.assistant-md tbody tr:nth-child(even) {
+  background: #fafafa;
 }
 
 .assistant-md th {

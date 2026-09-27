@@ -13,7 +13,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import ReactMarkdown from 'react-markdown';
+import Markdown from '../components/Markdown';
 import {
   createSession,
   deleteKnowledgeDoc,
@@ -668,7 +668,7 @@ function MessageBubble({ message, sending }: { message: ChatMessage; sending: bo
 
           {message.content ? (
             <div className="assistant-md">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <Markdown>{message.content}</Markdown>
             </div>
           ) : (
             !message.error &&

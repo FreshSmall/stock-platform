@@ -588,6 +588,12 @@ DATASOURCES = [
         "type": "akshare",
         "note": "沪深交易所官网（经 akshare）：退市名单（PIT 股票池）",
     },
+    {
+        "name": "hithink",
+        "type": "http",
+        "note": "同花顺官方（fuyao.aicubes.cn）：日K/股票池/指数/财务指标兜底 + "
+                "估值快照（需配置 HITHINK_API_KEY，未配置则不参与取数）",
+    },
 ]
 
 
@@ -671,6 +677,29 @@ def test_datasource(name: str) -> dict:
             ok = df is not None and not df.empty
             n = 0 if df is None else len(df)
             return {"name": name, "ok": ok, "detail": f"沪退市名单 {n} 条"}
+        except Exception as e:  # noqa: BLE001
+            return {"name": name, "ok": False, "detail": f"不可达：{str(e)[:100]}"}
+
+    if name == "hithink":
+        try:
+            from datetime import date, timedelta
+
+            from app.data import hithink_client
+
+            if not hithink_client.is_enabled():
+                return {"name": name, "ok": False,
+                        "detail": "未配置 HITHINK_API_KEY（.env），数据源未启用"}
+            end = date.today()
+            start = end - timedelta(days=30)
+            rows = _probe(
+                12,
+                hithink_client.fetch_daily_quotes,
+                "600519", start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "qfq",
+            )
+            ok = bool(rows)
+            return {"name": name, "ok": ok,
+                    "detail": f"日K探活返回 {len(rows)} 行"
+                    + ("" if ok else "（Key 无效或服务不可达）")}
         except Exception as e:  # noqa: BLE001
             return {"name": name, "ok": False, "detail": f"不可达：{str(e)[:100]}"}
 

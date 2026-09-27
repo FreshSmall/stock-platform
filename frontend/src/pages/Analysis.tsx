@@ -13,7 +13,7 @@ import {
 } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import ReactMarkdown from 'react-markdown';
+import Markdown from '../components/Markdown';
 import { getStockInfo } from '../api/stock';
 import {
   getLatestAnalysis,
@@ -224,7 +224,7 @@ export default function Analysis() {
                 borderRadius: 6,
               }}
             >
-              <ReactMarkdown>{streamText}</ReactMarkdown>
+              <Markdown>{streamText}</Markdown>
               {streaming && <span className="blink">▍</span>}
             </div>
           )}
@@ -245,7 +245,7 @@ export default function Analysis() {
                   <>
                     {result?.[s.key] ? (
                       <div className="assistant-md">
-                        <ReactMarkdown>{result[s.key]}</ReactMarkdown>
+                        <Markdown>{result[s.key]}</Markdown>
                       </div>
                     ) : (
                       <EmptyState description="暂无内容" />

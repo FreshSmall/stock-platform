@@ -118,12 +118,30 @@ def _is_trade_day(d: date) -> bool:
 _last_run_failed_codes: list[str] = []
 
 
+def _reset_session(db) -> None:
+    """Roll the shared session back after a per-code failure (best-effort).
+
+    A failed statement leaves the session in a "failed transaction" state;
+    without a rollback every later code dies instantly with "Can't reconnect
+    until invalid transaction is rolled back" — observed 2026-09-18, where one
+    transient MySQL disconnect poisoned the run and all ~1100 remaining
+    SH-mainboard codes failed fast instead of just the one code that hit it.
+    Best-effort on purpose: if even the rollback raises (DB hard-down), log
+    and return so the per-code loop keeps its isolation.
+    """
+    try:
+        db.rollback()
+    except Exception:  # noqa: BLE001 - never trade the loop's isolation away
+        logger.exception("session rollback failed; later codes may fail too")
+
+
 def _sync_codes(db, codes, start: str, end: str) -> tuple[int, list[str]]:
     """Sync ``codes`` over ``[start, end]`` and return ``(rows, failed)``.
 
     Shared by the 17:30 main run and the 23:00 retry. A failure on one code
-    logs an error but does not abort the run; the failing code is collected
-    into the returned ``failed`` list so the caller can replay it.
+    logs an error, rolls the session back and does not abort the run; the
+    failing code is collected into the returned ``failed`` list so the caller
+    can replay it.
 
     V2.1 write targets (spec-004 §3.3): the legacy ``daily_prices`` path runs
     while ``kline_source="legacy"``; the raw-store path
@@ -146,12 +164,14 @@ def _sync_codes(db, codes, start: str, end: str) -> tuple[int, list[str]]:
                 total += sync_daily.sync_one_stock(db, code, start, end)
             except Exception as e:  # noqa: BLE001 - log and continue per code
                 logger.error("sync failed for %s: %s", code, e)
+                _reset_session(db)
                 code_failed = True
         if write_v2:
             try:
                 total += sync_kline.sync_one_stock_v2(db, code, start, end)
             except Exception as e:  # noqa: BLE001
                 logger.error("v2 sync failed for %s: %s", code, e)
+                _reset_session(db)
                 code_failed = True
         if code_failed:
             failed.append(code)

@@ -9,9 +9,13 @@ It does NOT depend on the scheduler being accurate — it runs once at startup
 (in a background thread, so it never blocks serving requests) and reconciles
 ``daily_prices`` against the current date.
 
-Trading-day awareness: A-share market trades Mon-Fri. We treat weekdays as
-candidate trading days; holidays are tolerated because the per-stock sync is a
-no-op when the upstream has no bar for that date (akshare returns empty).
+Trading-day awareness: gap detection prefers the REAL trade calendar
+(sina primary, HiThink fallback) so holiday weekdays (e.g. the Mid-Autumn
+Friday 2026-09-25) don't launch a futile full-market sync — observed
+2026-09-27: a Sunday restart weekday-judged the holiday Friday as a gap and
+burned ~1h of requests across 4600 codes writing nothing. When no calendar
+source answers we fall back to the Mon-Fri judgment (the per-stock sync is
+still a no-op for holidays, just expensive).
 
 Completeness awareness: a day counts as settled only when its settled-row
 count is within :data:`_COMPLETENESS_RATIO` of the recent baseline. A partial
@@ -50,6 +54,10 @@ _TODAY_ELIGIBLE_HOUR = 17
 # How many recent dates to look at when computing the completeness baseline.
 _COUNT_WINDOW = 15
 
+# Process-lifetime cache for :func:`_calendar_days` — ``None`` until a
+# calendar fetch succeeds (failures stay uncached so a later call retries).
+_calendar_cache: set[date] | None = None
+
 
 def latest_complete_trade_date(db: Session) -> date | None:
     """The most recent date in ``daily_prices`` that has *settled* bars.
@@ -85,17 +93,42 @@ def settled_counts(db: Session, limit: int = _COUNT_WINDOW) -> dict[date, int]:
     return dict(rows)
 
 
+def _calendar_days() -> set[date] | None:
+    """The real A-share trading days, cached for the process lifetime.
+
+    :return: ``set[date]`` from :func:`akshare_client.fetch_trade_calendar`
+        (sina primary, HiThink fallback), or ``None`` when no calendar source
+        answers — callers then fall back to the weekday-only judgment.
+    """
+    global _calendar_cache
+    if _calendar_cache is None:
+        try:
+            from app.data.akshare_client import fetch_trade_calendar
+
+            days = set(fetch_trade_calendar())
+            if days:
+                _calendar_cache = days
+        except Exception as e:  # noqa: BLE001 - calendar is an optimization
+            logger.warning(
+                "backfill: trade calendar unavailable (%s), "
+                "falling back to weekday judgment", e,
+            )
+    return _calendar_cache
+
+
 def detect_gap(
     db: Session, today: date | None = None, now: datetime | None = None
 ) -> list[date]:
-    """Return the list of trading days (weekdays) missing from ``daily_prices``.
+    """Return the list of trading days missing from ``daily_prices``.
 
     Compares :func:`latest_complete_trade_date` against ``today`` (default:
     real today). The window starts right after the latest complete date —
     or AT the earliest recent date whose settled-row count is abnormally low
     (:data:`_COMPLETENESS_RATIO` of the baseline), i.e. a partially-synced
-    day is re-synced. Weekdays strictly after the start and up to the cap are
-    returned, capped at :data:`MAX_BACKFILL_DAYS`.
+    day is re-synced. Trading days strictly after the start and up to the
+    cap are returned, capped at :data:`MAX_BACKFILL_DAYS`. "Trading day"
+    comes from the real calendar when available (:func:`_calendar_days`),
+    else the Mon-Fri judgment.
 
     "Today" is only included from :data:`_TODAY_ELIGIBLE_HOUR` (17:00) local
     time on — before the session settles there is nothing to fetch, and an
@@ -137,17 +170,23 @@ def detect_gap(
 
     cap = today if now.hour >= _TODAY_ELIGIBLE_HOUR else today - timedelta(days=1)
     cap = min(cap, latest + timedelta(days=MAX_BACKFILL_DAYS))
+    calendar = _calendar_days()
     missing: list[date] = []
     cur = start
     while cur <= cap:
-        # weekday(): Mon=0 .. Sun=6 → trading days are 0-4.
-        if cur.weekday() < 5:
+        if calendar is not None:
+            is_trading = cur in calendar
+        else:
+            # weekday(): Mon=0 .. Sun=6 → trading days are 0-4.
+            is_trading = cur.weekday() < 5
+        if is_trading:
             missing.append(cur)
         cur += timedelta(days=1)
     if missing:
         logger.info(
-            "backfill: detected gap %s..%s (%d weekday(s))",
+            "backfill: detected gap %s..%s (%d trading day(s)%s)",
             missing[0], missing[-1], len(missing),
+            "" if calendar is not None else ", weekday-judged",
         )
     return missing
 

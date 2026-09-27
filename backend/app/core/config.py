@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # 每日数据质量巡检（08:00）。
     quality_check_enabled: bool = True
 
+    # --- HiThink 同花顺官方数据源（fuyao.aicubes.cn）------------------------
+    # 官方免费 REST（X-api-key 认证），作为腾讯/东财之后的兜底源。Key 为空 =
+    # 未启用：hithink_client 所有取数直接返回空，各兜底链行为与原先一致。
+    # Key 申请：https://fuyao.aicubes.cn/admin/
+    hithink_api_key: str = ""
+    hithink_base_url: str = "https://fuyao.aicubes.cn"
+
     # --- V2.5 运行可靠性（spec-007）-----------------------------------------
     # 调度线程池显式化（历史隐式默认即 10，行为不变）。
     scheduler_pool_size: int = 10

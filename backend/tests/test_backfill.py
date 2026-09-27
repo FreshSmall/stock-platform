@@ -35,6 +35,15 @@ def _insert_complete(db, code, d):
 # The real shared DB has genuinely truncated days (2026-07-28/29), and the
 # completeness check is supposed to see them — tests that only mock the max
 # date would depend on that live data.
+#
+# The trade calendar is pinned to the weekday judgment (None) so detect_gap
+# stays offline/deterministic here; calendar-aware behavior has its own
+# tests below.
+
+
+@pytest.fixture(autouse=True)
+def _weekday_calendar(monkeypatch):
+    monkeypatch.setattr(backfill, "_calendar_days", lambda: None)
 
 
 def _clean_counts(latest: date, days: int = 3) -> dict[date, int]:
@@ -137,6 +146,59 @@ def test_detect_gap_ignores_small_day_over_day_drift(db_session):
     ):
         gap = backfill.detect_gap(db_session, today=date(2026, 8, 14), now=evening)
         assert gap == []
+
+
+# --- calendar-aware gap detection -------------------------------------------
+#
+# The real incident: 2026-09-25 was a Mid-Autumn HOLIDAY Friday. A Sunday
+# 2026-09-27 restart weekday-judged it as a gap and burned a full-market
+# futile sync (4604 codes, ~1h, zero rows). With the real calendar the day
+# is excluded — and weekday fallback still catches ordinary Mondays.
+
+
+def test_detect_gap_calendar_excludes_holiday_weekday(db_session, monkeypatch):
+    """The 2026-09-25 incident: holiday Friday must NOT be a gap."""
+    monkeypatch.setattr(
+        backfill, "_calendar_days",
+        lambda: {date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29)},
+    )
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 9, 24)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 9, 24))),
+    ):
+        gap = backfill.detect_gap(
+            db_session, today=date(2026, 9, 27), now=datetime(2026, 9, 27, 20, 0)
+        )
+    assert gap == []  # Sat/Sun never trade; Fri 09-25 is a holiday
+
+
+def test_detect_gap_calendar_finds_next_trading_day(db_session, monkeypatch):
+    """Same setup but 09-28 (Mon) already eligible → the real gap appears."""
+    monkeypatch.setattr(
+        backfill, "_calendar_days",
+        lambda: {date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29)},
+    )
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 9, 24)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 9, 24))),
+    ):
+        gap = backfill.detect_gap(
+            db_session, today=date(2026, 9, 28), now=datetime(2026, 9, 28, 20, 0)
+        )
+    assert gap == [date(2026, 9, 28)]
+
+
+def test_detect_gap_weekday_fallback_when_calendar_down(db_session):
+    """No calendar at all → the old Mon-Fri judgment still reports the Friday
+    (harmless-but-costly holiday sync — the documented degraded mode)."""
+    with (
+        patch.object(backfill, "latest_complete_trade_date", return_value=date(2026, 9, 24)),
+        patch.object(backfill, "settled_counts", return_value=_clean_counts(date(2026, 9, 24))),
+    ):
+        gap = backfill.detect_gap(
+            db_session, today=date(2026, 9, 27), now=datetime(2026, 9, 27, 20, 0)
+        )
+    assert gap == [date(2026, 9, 25)]
 
 
 def test_latest_complete_trade_date_ignores_null_pct(db_session):

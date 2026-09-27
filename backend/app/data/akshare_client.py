@@ -244,7 +244,38 @@ def fetch_daily_quotes(
     rows = _fetch_daily_quotes_tencent(symbol, start_date, end_date, max_bars=max_bars)
     if rows:
         return rows
-    return _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="qfq")
+    rows = _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="qfq")
+    if rows:
+        return rows
+    # Last resort: the official HiThink REST service (needs HITHINK_API_KEY;
+    # returns [] without one, so this is a no-op unless configured).
+    return _fetch_daily_quotes_hithink(symbol, start_date, end_date, "qfq")
+
+
+def _fetch_daily_quotes_hithink(
+    symbol: str, start_date: str, end_date: str, adjust: str
+) -> list[dict]:
+    """Last-resort daily-K fallback: the official HiThink REST service.
+
+    Only participates when ``HITHINK_API_KEY`` is configured — otherwise
+    :mod:`app.data.hithink_client` returns ``[]`` immediately and the chain
+    behaves as before. ``adjust`` is one of ``""`` (raw) / ``"qfq"`` /
+    ``"hfq"``. Rows carry ``_source='hithink'`` so ``sa_kline_daily.source``
+    records the provenance.
+    """
+    try:
+        from app.data import hithink_client  # lazy: keeps modules decoupled
+
+        rows = hithink_client.fetch_daily_quotes(symbol, start_date, end_date, adjust)
+        if rows:
+            logger.info(
+                "hithink fallback served %s adjust=%s (%d rows)",
+                symbol, adjust or "raw", len(rows),
+            )
+        return rows
+    except Exception as e:  # noqa: BLE001
+        logger.warning("hithink daily-K fallback failed for %s: %s", symbol, e)
+        return []
 
 
 def _fetch_daily_quotes_em(
@@ -338,6 +369,11 @@ def fetch_daily_quotes_raw(
     rows = _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="")
     for r in rows:
         r["_source"] = "em"
+    if rows:
+        return rows
+    rows = _fetch_daily_quotes_hithink(symbol, start_date, end_date, "")
+    for r in rows:
+        r["_source"] = "hithink"
     return rows
 
 
@@ -367,7 +403,10 @@ def fetch_daily_quotes_hfq(
     )
     if rows:
         return rows
-    return _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="hfq")
+    rows = _fetch_daily_quotes_em(symbol, start_date, end_date, adjust="hfq")
+    if rows:
+        return rows
+    return _fetch_daily_quotes_hithink(symbol, start_date, end_date, "hfq")
 
 
 def _frame_to_rows(symbol: str, df) -> list[dict]:
@@ -610,7 +649,22 @@ def fetch_spot_table() -> list[dict]:
     rows = _fetch_spot_table_tencent()
     if rows:
         return rows
-    return []
+    logger.warning("spot table: tencent rank empty/failed, trying hithink")
+    return _fetch_spot_table_hithink()
+
+
+def _fetch_spot_table_hithink() -> list[dict]:
+    """Whole-market spot from the HiThink paged snapshot (name lookup via
+    ``/api/meta``). Valuation fields are ``None`` on this source — same
+    contract as the Tencent rank fallback. ``[]`` unless ``HITHINK_API_KEY``
+    is configured."""
+    try:
+        from app.data import hithink_client
+
+        return hithink_client.fetch_spot_table()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("hithink spot-table fallback failed: %s", e)
+        return []
 
 
 def _mv_yuan_to_yi(v) -> float | None:
@@ -752,6 +806,21 @@ _FIN_INDICATOR_MAP = {
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
+def _fetch_financial_abstract_hithink(symbol: str) -> list[dict]:
+    """Financial-indicator fallback: HiThink per-report-period indicators.
+
+    Latest 4 report periods (4 requests). ``eps`` stays ``None`` — not in
+    HiThink's indicator set. ``[]`` unless ``HITHINK_API_KEY`` is configured.
+    """
+    try:
+        from app.data import hithink_client
+
+        return hithink_client.fetch_financial_abstract(symbol)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("hithink financial fallback failed for %s: %s", symbol, e)
+        return []
+
+
 def fetch_financial_abstract(symbol: str) -> list[dict]:
     """Fetch per-report financial indicators (roe/eps/growth) for one stock.
 
@@ -767,10 +836,23 @@ def fetch_financial_abstract(symbol: str) -> list[dict]:
         most recent :data:`_FIN_PERIODS` periods only (the leading — newest —
         period columns). Empty on failure.
     """
-    _throttle()
-    df = _with_timeout(ak.stock_financial_abstract, symbol=symbol)
+    try:
+        _throttle()
+        df = _with_timeout(ak.stock_financial_abstract, symbol=symbol)
+    except Exception:  # noqa: BLE001
+        # Primary failed — try the HiThink fallback BEFORE surfacing the
+        # failure: sync_all counts a raise as a per-code failure for its
+        # circuit breaker, so only re-raise when the fallback is empty too.
+        rows = _fetch_financial_abstract_hithink(symbol)
+        if rows:
+            logger.info(
+                "hithink served financial abstract for %s (%d periods)",
+                symbol, len(rows),
+            )
+            return rows
+        raise
     if df is None or df.empty:
-        return []
+        return _fetch_financial_abstract_hithink(symbol)
 
     # indicator name -> {period_compact: value}; first occurrence wins
     # (some names repeat across sections — 常用指标 comes first and is the
@@ -1156,11 +1238,13 @@ def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
             timeout=12,
         )
         if r is None:
-            return []
+            # Cooldown/501/network failure — fall through to the HiThink
+            # fallback (no-op without HITHINK_API_KEY).
+            return _fetch_index_quotes_hithink(symbol, index_name)
         data = (r.json().get("data") or {}).get(symbol) or {}
-    except Exception as e:  # noqa: BLE001 - any failure → empty, logged upstream
+    except Exception as e:  # noqa: BLE001 - any failure → fallback, logged
         logger.warning("tencent index fetch failed for %s: %s", symbol, e)
-        return []
+        return _fetch_index_quotes_hithink(symbol, index_name)
 
     raw = data.get("qfqday") or data.get("day") or []
     out: list[dict] = []
@@ -1189,7 +1273,26 @@ def fetch_index_quotes(symbol: str, index_name: str = "") -> list[dict]:
             }
         )
         prev_close = close
-    return out
+    if out:
+        return out
+    # Tencent down/empty — try the HiThink index historical endpoint before
+    # giving up (no-op without HITHINK_API_KEY).
+    return _fetch_index_quotes_hithink(symbol, index_name)
+
+
+def _fetch_index_quotes_hithink(symbol: str, index_name: str = "") -> list[dict]:
+    """Index daily-K fallback via the official HiThink REST service.
+
+    Same row shape as :func:`fetch_index_quotes`; also accepts full thscodes
+    (``886042.TI`` board indexes) which the Tencent path can't serve.
+    """
+    try:
+        from app.data import hithink_client
+
+        return hithink_client.fetch_index_quotes(symbol, index_name)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("hithink index fallback failed for %s: %s", symbol, e)
+        return []
 
 
 def fetch_trade_calendar() -> list:
@@ -1197,20 +1300,44 @@ def fetch_trade_calendar() -> list:
 
     Used by the scheduler to skip weekend/holiday syncs instead of firing a
     full-market pull that can only write nothing (and only burns WAF
-    goodwill). Values are ``datetime.date``. Raises on failure — callers
-    fall back to the weekday-only judgment.
+    goodwill). Values are ``datetime.date``.
+
+    Fallback: the HiThink calendar (recent year only, no future dates) when
+    sina is down — better than nothing for recent-gap detection. Raises when
+    both sources fail — callers fall back to the weekday-only judgment.
     """
-    _throttle()
-    df = _with_timeout(ak.tool_trade_date_hist_sina)
-    out = []
-    for v in df["trade_date"]:
-        if isinstance(v, datetime):
-            out.append(v.date())
-        elif isinstance(v, date):
-            out.append(v)
-        else:
-            out.append(date.fromisoformat(str(v)))
-    return out
+    try:
+        _throttle()
+        df = _with_timeout(ak.tool_trade_date_hist_sina)
+        out = []
+        for v in df["trade_date"]:
+            if isinstance(v, datetime):
+                out.append(v.date())
+            elif isinstance(v, date):
+                out.append(v)
+            else:
+                out.append(date.fromisoformat(str(v)))
+        return out
+    except Exception:
+        rows = _fetch_trade_calendar_hithink()
+        if rows:
+            logger.info(
+                "trade calendar: sina failed, hithink served %d days "
+                "(recent year only)", len(rows),
+            )
+            return rows
+        raise
+
+
+def _fetch_trade_calendar_hithink() -> list:
+    """Trade-calendar fallback: HiThink's fixed past-year window."""
+    try:
+        from app.data import hithink_client
+
+        return hithink_client.fetch_trade_calendar()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("hithink calendar fallback failed: %s", e)
+        return []
 
 
 def _to_float(v: Any) -> float | None:
